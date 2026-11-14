@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-android</TargetFramework>
+    <SupportedOSPlatformVersion>26</SupportedOSPlatformVersion>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>PKHeXAndroid</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>14</LangVersion>
+    <ApplicationId>org.pkhex.android.port</ApplicationId>
+    <ApplicationVersion>1</ApplicationVersion>
+    <ApplicationDisplayVersion>0.1-test</ApplicationDisplayVersion>
+    <AndroidPackageFormat>apk</AndroidPackageFormat>
+    <!-- 64-bit ARM phones only: keeps the APK small. -->
+    <RuntimeIdentifiers>android-arm64</RuntimeIdentifiers>
+    <!-- PKHeX.Core loads its data tables by name; do not let the linker remove anything from it. -->
+    <AndroidLinkMode>SdkOnly</AndroidLinkMode>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Official PKHeX core library, fetched by scripts/fetch_pkhex.sh at a pinned commit. -->
+    <ProjectReference Include="..\pkhex-upstream\PKHeX.Core\PKHeX.Core.csproj" />
+  </ItemGroup>
+
+</Project>

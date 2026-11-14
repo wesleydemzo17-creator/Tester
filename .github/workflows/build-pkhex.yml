@@ -1,0 +1,45 @@
+name: Build PKHeX APK
+
+on:
+  push:
+    branches: [pkhex-android]
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install the .NET Android workload
+        run: dotnet workload install android
+
+      - name: Fetch PKHeX source (pinned commit)
+        run: ./scripts/fetch_pkhex.sh
+
+      - name: Build APK
+        run: dotnet build PKHeXAndroid/PKHeXAndroid.csproj -c Release -p:AndroidSdkDirectory="$ANDROID_HOME"
+
+      - name: Collect APK
+        run: |
+          mkdir -p out
+          find PKHeXAndroid/bin/Release -name '*-Signed.apk' -exec cp {} out/pkhex-android.apk \;
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkhex-android-apk
+          path: out/*.apk
+          if-no-files-found: error
