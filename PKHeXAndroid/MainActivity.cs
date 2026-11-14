@@ -12,8 +12,117 @@ using Android.Text;
 using Android.Views;
 using Android.Widget;
 using PKHeX.Core;
+using AColor = Android.Graphics.Color;
+using Canvas = Android.Graphics.Canvas;
+using Paint = Android.Graphics.Paint;
+using PaintFlags = Android.Graphics.PaintFlags;
+using RectF = Android.Graphics.RectF;
 
 namespace PKHeXAndroid;
+
+/// <summary>
+/// One storage slot, drawn as a coloured tile: the colours come from the species' types and the
+/// text shows its name and level. Stands in for the picture a slot has in the desktop program.
+/// </summary>
+public sealed class SlotView : View
+{
+    // One colour per type index (an original palette, not taken from any game).
+    private static readonly int[] TypeColors =
+    [
+        0x8A8D7A, 0xB5503C, 0x7F9BD8, 0x8E55A0, 0xC2A565, 0x9E8A4A, 0x8FA63A, 0x65588F, 0x9FA3B3,
+        0xD9773A, 0x4F86D6, 0x5FA955, 0xE0BE3C, 0xD9628A, 0x7FC9CC, 0x5E48C9, 0x5A4A45, 0xD99AC4,
+    ];
+
+    private readonly Paint paint = new(PaintFlags.AntiAlias);
+    private readonly RectF rect = new();
+    private string line1 = "", line2 = "", marks = "";
+    private int color1 = 0x2C2F33, color2 = 0x2C2F33;
+    private bool empty = true;
+
+    public bool Highlighted { get; set; }
+
+    public SlotView(Context context) : base(context) { }
+
+    public void Bind(PKM? pk)
+    {
+        empty = pk is null || pk.Species == 0;
+        line1 = line2 = marks = "";
+        color1 = color2 = 0x2C2F33;
+        if (!empty)
+        {
+            var names = GameInfo.Strings.Species;
+            line1 = pk!.Species < names.Count ? names[pk.Species] : $"#{pk.Species}";
+            line2 = pk.IsEgg ? "ovo" : $"Nv. {pk.CurrentLevel}";
+            try
+            {
+                var info = pk.PersonalInfo;
+                color1 = TypeColors[info.Type1 % TypeColors.Length];
+                color2 = TypeColors[info.Type2 % TypeColors.Length];
+                if (pk.IsShiny)
+                    marks += "★";
+                if (!new LegalityAnalysis(pk).Valid)
+                    marks += "⚠";
+            }
+            catch (Exception)
+            {
+                marks += "?";
+            }
+        }
+        Invalidate();
+    }
+
+    private static AColor Rgb(int rgb, int alpha = 255) => new((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF, alpha);
+
+    private void DrawFitted(Canvas canvas, string text, float cx, float y, float size, float maxWidth)
+    {
+        paint.TextSize = size;
+        while (paint.TextSize > size * 0.55f && paint.MeasureText(text) > maxWidth)
+            paint.TextSize -= 1f;
+        canvas.DrawText(text, cx, y, paint);
+    }
+
+    protected override void OnDraw(Canvas canvas)
+    {
+        base.OnDraw(canvas);
+        float w = Width, h = Height, m = Math.Max(2f, w * 0.03f);
+        if (w <= 0 || h <= 0)
+            return;
+
+        paint.SetStyle(Paint.Style.Fill);
+        paint.Color = Rgb(color1);
+        canvas.DrawRect(m, m, w / 2f, h - m, paint);
+        paint.Color = Rgb(color2);
+        canvas.DrawRect(w / 2f, m, w - m, h - m, paint);
+
+        if (!empty)
+        {
+            // Dark band behind the text keeps it readable on any colour.
+            paint.Color = Rgb(0x000000, 110);
+            canvas.DrawRect(m, h * 0.18f, w - m, h * 0.92f, paint);
+            paint.Color = AColor.White;
+            paint.TextAlign = Paint.Align.Center;
+            float size = Math.Min(h * 0.27f, w * 0.26f);
+            DrawFitted(canvas, line1, w / 2f, h * 0.50f, size, w - m * 4f);
+            DrawFitted(canvas, line2, w / 2f, h * 0.82f, size * 0.85f, w - m * 4f);
+            if (marks.Length > 0)
+            {
+                paint.TextAlign = Paint.Align.Right;
+                paint.Color = Rgb(0xFFE066);
+                paint.TextSize = size * 0.8f;
+                canvas.DrawText(marks, w - m * 2f, m + size * 0.75f, paint);
+            }
+        }
+
+        if (Highlighted)
+        {
+            paint.SetStyle(Paint.Style.Stroke);
+            paint.StrokeWidth = m * 1.2f;
+            paint.Color = AColor.White;
+            rect.Set(m, m, w - m, h - m);
+            canvas.DrawRect(rect, paint);
+        }
+    }
+}
 
 /// <summary>
 /// The whole app is this one activity. Each screen is a method that builds a view; a small
@@ -33,15 +142,87 @@ public class MainActivity : Activity
     private static SaveFile? sav;
     private static string savName = "";
 
+    // The Pokémon loaded in the editor (a copy; slots only change through "Colocar aqui").
+    private static PKM? editing;
+    private static string? startupCrash;
+
     private readonly Stack<Func<View>> history = new();
     private Func<View>? current;
     private int currentBox;
+    private int currentTab;
+    private Func<string?>? applyTab;
 
     // ------------------------------------------------------------------ lifecycle / navigation
     protected override void OnCreate(Bundle? savedInstanceState)
     {
         base.OnCreate(savedInstanceState);
+        InstallCrashReporter();
         Navigate(Home);
+        if (startupCrash != null)
+        {
+            Message("O app fechou na última vez", "Envie este texto para quem cuida do app:\n\n" + startupCrash);
+            startupCrash = null;
+        }
+    }
+
+    private string CrashFile => System.IO.Path.Combine(FilesDir!.AbsolutePath, "crash.txt");
+
+    /// <summary>Saves the details of a fatal error so they can be shown the next time the app opens.</summary>
+    private void InstallCrashReporter()
+    {
+        var path = CrashFile;
+        try
+        {
+            if (File.Exists(path))
+            {
+                startupCrash = File.ReadAllText(path);
+                if (startupCrash.Length > 3000)
+                    startupCrash = startupCrash[..3000];
+                File.Delete(path);
+            }
+        }
+        catch (Exception)
+        {
+            // Not being able to read an old report must never stop the app from opening.
+        }
+        if (crashReporterInstalled)
+            return;
+        crashReporterInstalled = true;
+        AndroidEnvironment.UnhandledExceptionRaiser += (_, e) => WriteCrash(path, e.Exception);
+        AppDomain.CurrentDomain.UnhandledException += (_, e) => WriteCrash(path, e.ExceptionObject as Exception);
+    }
+
+    private static bool crashReporterInstalled;
+
+    private static void WriteCrash(string path, Exception? ex)
+    {
+        try { File.WriteAllText(path, ex?.ToString() ?? "erro desconhecido"); }
+        catch (Exception) { }
+    }
+
+    public override void OnConfigurationChanged(Android.Content.Res.Configuration newConfig)
+    {
+        base.OnConfigurationChanged(newConfig);
+        Refresh(); // the main screen arranges itself differently in portrait and landscape
+    }
+
+    /// <summary>Builds a screen, showing the error instead of closing the app if something goes wrong.</summary>
+    private View Safe(Func<View> screen)
+    {
+        try
+        {
+            return screen();
+        }
+        catch (Exception ex)
+        {
+            var col = Column();
+            col.AddView(Label("Erro ao montar esta tela", 20f), Fill());
+            var text = Label(ex.ToString(), 12f);
+            text.SetTextIsSelectable(true);
+            col.AddView(text, Fill());
+            col.AddView(Btn("Voltar ao início", () => { sav = null; editing = null; GoHome(); }), Fill());
+            return Scrollable(col);
+        }
     }
 
     private void Navigate(Func<View> screen)
@@ -49,14 +230,14 @@ public class MainActivity : Activity
         if (current != null)
             history.Push(current);
         current = screen;
-        SetContentView(screen());
+        SetContentView(Safe(screen));
     }
 
     /// <summary>Rebuilds the screen that is showing, after its data changed.</summary>
     private void Refresh()
     {
         if (current != null)
-            SetContentView(current());
+            SetContentView(Safe(current));
     }
 
     private void GoBack()
@@ -67,14 +248,14 @@ public class MainActivity : Activity
             return;
         }
         current = history.Pop();
-        SetContentView(current());
+        SetContentView(Safe(current));
     }
 
     private void GoHome()
     {
         history.Clear();
         current = Home;
-        SetContentView(Home());
+        SetContentView(Safe(Home));
     }
 
 #pragma warning disable CS0672, CS0618, CA1422 // OnBackPressed is the simplest hook that works on every supported version
@@ -161,116 +342,216 @@ public class MainActivity : Activity
             return Scrollable(col);
         }
 
-        var info =
-            $"Arquivo: {savName}\n" +
-            $"Jogo: {GameInfo.GetVersionName(s.Version)} (geração {s.Generation})\n" +
-            $"Treinador: {s.OT}\n" +
-            $"ID: {s.DisplayTID}\n" +
-            $"Dinheiro: {s.Money}\n" +
-            $"Tempo de jogo: {s.PlayedHours}h {s.PlayedMinutes:00}min\n" +
-            $"Caixas: {s.BoxCount} · Equipe: {(s.HasParty ? s.PartyCount : 0)}\n" +
-            $"Verificação do arquivo: {(s.ChecksumsValid ? "ok" : "com erros")}" +
-            (s.State.Edited ? "\n\nHá alterações ainda não exportadas." : "");
-        col.AddView(Label(info), Fill());
+        return Workspace(s);
+    }
+
+    // ------------------------------------------------------------------ workspace (editor + storage, like the desktop program)
+    private View Workspace(SaveFile s)
+    {
+        bool landscape = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
+        var root = new LinearLayout(this) { Orientation = Orientation.Vertical };
+        root.SetPadding(Dp(6), Dp(6), Dp(6), Dp(6));
+
+        // Menu bar.
+        var bar = Row();
+        bar.AddView(Btn("Abrir", PickSave));
+        bar.AddView(Btn("Exportar", ExportSave));
+        bar.AddView(Btn("Treinador", () => TrainerDialog(s)));
+        bar.AddView(Btn("Sobre o save", () => Message("Save", SaveInfo(s))));
+        var barScroll = new HorizontalScrollView(this);
+        barScroll.AddView(bar);
+        root.AddView(barScroll, Fill());
+        root.AddView(Label($"{GameInfo.GetVersionName(s.Version)} · {s.OT} · {savName}" + (s.State.Edited ? "  (alterado)" : ""), 12f), Fill());
+
+        var body = new LinearLayout(this) { Orientation = landscape ? Orientation.Horizontal : Orientation.Vertical };
+        var editor = EditorPanel(s);
+        var storage = StoragePanel(s);
+        if (landscape)
+        {
+            body.AddView(editor, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MatchParent, 1f));
+            body.AddView(storage, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MatchParent, 1f));
+        }
+        else
+        {
+            body.AddView(editor, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, 0, 1f));
+            body.AddView(storage, Fill());
+        }
+        root.AddView(body, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, 0, 1f));
+        return root;
+    }
+
+    private static string SaveInfo(SaveFile s) =>
+        $"Arquivo: {savName}\n" +
+        $"Jogo: {GameInfo.GetVersionName(s.Version)} (geração {s.Generation})\n" +
+        $"Treinador: {s.OT}\n" +
+        $"ID: {s.DisplayTID}\n" +
+        $"Dinheiro: {s.Money}\n" +
+        $"Tempo de jogo: {s.PlayedHours}h {s.PlayedMinutes:00}min\n" +
+        $"Caixas: {s.BoxCount} · Equipe: {(s.HasParty ? s.PartyCount : 0)}\n" +
+        $"Verificação do arquivo: {(s.ChecksumsValid ? "ok" : "com erros")}" +
+        (s.State.Edited ? "\n\nHá alterações ainda não exportadas." : "");
+
+    // ------------------------------------------------------------------ storage panel: box grid + party
+    private View StoragePanel(SaveFile s)
+    {
+        var col = new LinearLayout(this) { Orientation = Orientation.Vertical };
+        int tileH = Dp(46);
 
         if (s.HasBox && s.BoxCount > 0)
-            col.AddView(Btn("Caixas", () => Navigate(Boxes)), Fill());
+        {
+            int count = s.BoxCount;
+            currentBox = Math.Clamp(currentBox, 0, count - 1);
+            int box = currentBox;
+            var name = s is IBoxDetailNameRead named ? named.GetBoxName(box) : BoxDetailNameExtensions.GetDefaultBoxName(box);
+
+            var header = Row();
+            header.AddView(Btn("◀", () => { currentBox = (box + count - 1) % count; Rebuild(); }));
+            var title = Label($"{name}  ({box + 1}/{count})", 15f);
+            title.Gravity = GravityFlags.Center;
+            header.AddView(title, Weighted());
+            header.AddView(Btn("▶", () => { currentBox = (box + 1) % count; Rebuild(); }));
+            col.AddView(header, Fill());
+
+            // Six columns, like the desktop program.
+            const int columns = 6;
+            int slots = s.BoxSlotCount;
+            for (int start = 0; start < slots; start += columns)
+            {
+                var row = Row();
+                for (int c = 0; c < columns; c++)
+                {
+                    int slot = start + c;
+                    var tile = new SlotView(this);
+                    if (slot < slots)
+                    {
+                        var pk = s.GetBoxSlotAtIndex(box, slot);
+                        tile.Bind(pk);
+                        tile.Click += (_, _) => SlotMenu(tile, s, pk, isParty: false, box, slot);
+                    }
+                    row.AddView(tile, new LinearLayout.LayoutParams(0, tileH, 1f));
+                }
+                col.AddView(row, Fill());
+            }
+        }
+
         if (s.HasParty)
-            col.AddView(Btn("Equipe", () => Navigate(Party)), Fill());
-        col.AddView(Btn("Treinador", () => Navigate(Trainer)), Fill());
-        col.AddView(Btn("Exportar save editado", ExportSave), Fill());
-        col.AddView(Btn("Abrir outro arquivo", PickSave), Fill());
+        {
+            col.AddView(Label("Equipe", 13f), Fill());
+            var row = Row();
+            for (int i = 0; i < 6; i++)
+            {
+                int index = i;
+                var tile = new SlotView(this);
+                var pk = index < s.PartyCount ? s.GetPartySlotAtIndex(index) : null;
+                tile.Bind(pk);
+                tile.Click += (_, _) => SlotMenu(tile, s, pk, isParty: true, 0, index);
+                row.AddView(tile, new LinearLayout.LayoutParams(0, tileH, 1f));
+            }
+            col.AddView(row, Fill());
+        }
+
+        col.AddView(Label("Toque num espaço: Ver, Colocar ou Apagar · ★ brilhante · ⚠ ilegal", 11f), Fill());
         return Scrollable(col);
     }
 
-    // ------------------------------------------------------------------ lists of Pokémon
-    private static string Describe(PKM pk)
+    /// <summary>The slot's menu: the same View / Set / Delete actions as the desktop program.</summary>
+    private void SlotMenu(View anchor, SaveFile s, PKM? inSlot, bool isParty, int box, int slot)
     {
-        if (pk.Species == 0)
-            return "— vazio —";
-
-        var names = GameInfo.Strings.Species;
-        var name = pk.Species < names.Count ? names[pk.Species] : $"#{pk.Species}";
-        var text = pk.IsEgg ? $"{name} (ovo)" : $"{name}  Nv. {pk.CurrentLevel}";
-        if (pk.IsNicknamed && !pk.IsEgg)
-            text += $"  “{pk.Nickname}”";
-        if (pk.IsShiny)
-            text += "  ★";
-        try
+        bool occupied = inSlot is { Species: not 0 };
+        var menu = new PopupMenu(this, anchor);
+        if (occupied)
+            menu.Menu!.Add(0, 1, 0, "Ver (carregar no editor)");
+        if (editing is { Species: not 0 })
+            menu.Menu!.Add(0, 2, 1, "Colocar aqui o Pokémon do editor");
+        if (occupied)
+            menu.Menu!.Add(0, 3, 2, "Apagar");
+        if (menu.Menu!.Size() == 0)
         {
-            if (!new LegalityAnalysis(pk).Valid)
-                text += "  ⚠";
+            Toast("Espaço vazio. Carregue um Pokémon no editor para colocar aqui.");
+            return;
         }
-        catch (Exception)
-        {
-            text += "  ?";
-        }
-        return text;
-    }
 
-    private View SlotList(string title, View? header, int count, Func<int, PKM> get, Action<int, PKM> set, bool party)
-    {
-        var col = Column();
-        col.AddView(Label(title, 20f), Fill());
-        if (header != null)
-            col.AddView(header, Fill());
-        col.AddView(Label("★ brilhante · ⚠ não passou na checagem de legalidade", 12f), Fill());
-
-        var items = new List<string>(count);
-        for (int i = 0; i < count; i++)
-            items.Add($"{i + 1}. {Describe(get(i))}");
-
-        var list = new ListView(this)
+        menu.MenuItemClick += (_, e) =>
         {
-            Adapter = new ArrayAdapter<string>(this, global::Android.Resource.Layout.SimpleListItem1, items),
-        };
-        list.ItemClick += (_, e) =>
-        {
-            int index = e.Position;
-            var pk = get(index);
-            if (pk.Species == 0)
+            try
             {
-                Toast("Este espaço está vazio.");
-                return;
+                switch (e.Item!.ItemId)
+                {
+                    case 1:
+                        editing = inSlot!.Clone();
+                        currentTab = 0;
+                        Rebuild(applyFirst: false);
+                        break;
+                    case 2:
+                        var error = applyTab?.Invoke();
+                        if (error != null)
+                        {
+                            Toast(error);
+                            return;
+                        }
+                        var pk = editing!.Clone();
+                        if (isParty)
+                        {
+                            pk.ResetPartyStats();
+                            s.SetPartySlotAtIndex(pk, Math.Min(slot, s.PartyCount));
+                        }
+                        else
+                        {
+                            s.SetBoxSlotAtIndex(pk, box, slot);
+                        }
+                        s.State.Edited = true;
+                        Rebuild(applyFirst: false);
+                        break;
+                    case 3:
+                        Confirm("Apagar este Pokémon?", () =>
+                        {
+                            if (isParty)
+                            {
+                                if (s.PartyCount <= 1)
+                                {
+                                    Toast("A equipe precisa de pelo menos um Pokémon.");
+                                    return;
+                                }
+                                s.DeletePartySlot(slot);
+                            }
+                            else
+                            {
+                                s.SetBoxSlotAtIndex(s.BlankPKM, box, slot);
+                            }
+                            s.State.Edited = true;
+                            Rebuild();
+                        });
+                        break;
+                }
             }
-            var copy = pk.Clone();
-            Navigate(() => Editor(copy, edited => set(index, edited), party));
+            catch (Exception ex)
+            {
+                Message("Erro", ex.Message);
+            }
         };
-        col.AddView(list, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, 0, 1f));
-        return col;
+        menu.Show();
     }
 
-    private View Boxes()
+    private void Confirm(string question, Action onYes) =>
+        new AlertDialog.Builder(this)
+            .SetMessage(question)!
+            .SetPositiveButton("Sim", (_, _) => onYes())!
+            .SetNegativeButton("Não", (_, _) => { })!
+            .Show();
+
+    /// <summary>Redraws the workspace, first copying what is typed in the editor into the Pokémon.</summary>
+    private void Rebuild(bool applyFirst = true)
     {
-        var s = sav!;
-        int count = s.BoxCount;
-        currentBox = Math.Clamp(currentBox, 0, count - 1);
-        int box = currentBox;
-
-        var name = s is IBoxDetailNameRead named ? named.GetBoxName(box) : BoxDetailNameExtensions.GetDefaultBoxName(box);
-        var header = Row();
-        header.AddView(Btn("◀", () => { currentBox = (box + count - 1) % count; Refresh(); }));
-        var title = Label($"{name}  ({box + 1}/{count})", 17f);
-        title.Gravity = GravityFlags.Center;
-        header.AddView(title, Weighted());
-        header.AddView(Btn("▶", () => { currentBox = (box + 1) % count; Refresh(); }));
-
-        return SlotList("Caixas", header, s.BoxSlotCount,
-            slot => s.GetBoxSlotAtIndex(box, slot),
-            (slot, pk) => s.SetBoxSlotAtIndex(pk, box, slot),
-            party: false);
+        if (applyFirst)
+        {
+            var error = applyTab?.Invoke();
+            if (error != null)
+                Toast(error);
+        }
+        Refresh();
     }
 
-    private View Party()
-    {
-        var s = sav!;
-        return SlotList("Equipe", null, s.PartyCount,
-            s.GetPartySlotAtIndex,
-            (slot, pk) => s.SetPartySlotAtIndex(pk, slot),
-            party: true);
-    }
-
-    // ------------------------------------------------------------------ Pokémon editor
+    // ------------------------------------------------------------------ editor panel (tabs)
     private AutoCompleteTextView Picker(IReadOnlyList<ComboItem> items, int value)
     {
         var texts = new List<string>(items.Count);
@@ -289,6 +570,16 @@ public class MainActivity : Activity
         };
         box.SetSingleLine(true);
         return box;
+    }
+
+    private Spinner Choice(IReadOnlyList<string> texts, int selected)
+    {
+        var adapter = new ArrayAdapter<string>(this, global::Android.Resource.Layout.SimpleSpinnerItem, texts.ToList());
+        adapter.SetDropDownViewResource(global::Android.Resource.Layout.SimpleSpinnerDropDownItem);
+        var spinner = new Spinner(this) { Adapter = adapter };
+        if (selected >= 0 && selected < texts.Count)
+            spinner.SetSelection(selected);
+        return spinner;
     }
 
     /// <summary>Finds the list entry whose text was typed. Empty text counts as value 0 ("none").</summary>
@@ -330,93 +621,170 @@ public class MainActivity : Activity
         return result;
     }
 
-    private View Editor(PKM pk, Action<PKM> store, bool party)
+    private View EditorPanel(SaveFile s)
+    {
+        var col = new LinearLayout(this) { Orientation = Orientation.Vertical };
+        applyTab = null;
+        var pk = editing;
+        if (pk is null || pk.Species == 0)
+        {
+            col.AddView(Label("Editor", 18f), Fill());
+            col.AddView(Label("Toque num Pokémon das caixas ou da equipe e escolha \"Ver\" para carregar aqui."), Fill());
+            return col;
+        }
+
+        // Header: preview tile, summary and the legality indicator.
+        var header = Row();
+        var preview = new SlotView(this);
+        preview.Bind(pk);
+        header.AddView(preview, new LinearLayout.LayoutParams(Dp(76), Dp(56)));
+        bool legal;
+        try { legal = new LegalityAnalysis(pk).Valid; }
+        catch (Exception) { legal = false; }
+        header.AddView(Btn(legal ? "✔ Legal" : "⚠ Ilegal", () =>
+        {
+            try
+            {
+                var error = applyTab?.Invoke();
+                if (error != null)
+                {
+                    Toast(error);
+                    return;
+                }
+                var analysis = new LegalityAnalysis(editing!);
+                Message(analysis.Valid ? "Legal" : "Não é legal", analysis.Report());
+                Refresh();
+            }
+            catch (Exception ex)
+            {
+                Message("Erro", ex.Message);
+            }
+        }));
+        col.AddView(header, Fill());
+
+        // Tabs.
+        string[] tabNames = ["Principal", "Stats", "Golpes", "Origem"];
+        var tabs = Row();
+        for (int i = 0; i < tabNames.Length; i++)
+        {
+            int index = i;
+            var tab = Btn(tabNames[i], () => { var e = applyTab?.Invoke(); if (e != null) { Toast(e); return; } currentTab = index; Refresh(); });
+            tab.Enabled = index != currentTab;
+            tabs.AddView(tab, Weighted());
+        }
+        col.AddView(tabs, Fill());
+
+        var page = new LinearLayout(this) { Orientation = Orientation.Vertical };
+        page.SetPadding(Dp(4), 0, Dp(4), Dp(8));
+        applyTab = currentTab switch
+        {
+            1 => StatsTab(page, pk),
+            2 => MovesTab(page, pk),
+            3 => OriginTab(page, pk),
+            _ => MainTab(page, pk),
+        };
+        col.AddView(Scrollable(page), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, 0, 1f));
+        return col;
+    }
+
+    /// <summary>Recalculates what depends on the edited values. Called at the end of every tab's apply.</summary>
+    private static void Recalculate(PKM pk)
+    {
+        if (pk.PartyStatsPresent)
+            pk.ResetPartyStats();
+        pk.RefreshChecksum();
+    }
+
+    private Func<string?> MainTab(LinearLayout page, PKM pk)
     {
         var src = GameInfo.FilteredSources;
-        var col = Column();
-        col.AddView(Label("Editar Pokémon", 20f), Fill());
 
-        col.AddView(Label("Espécie"), Fill());
+        page.AddView(Label("Espécie"), Fill());
         var species = Picker(src.Species, pk.Species);
-        col.AddView(species, Fill());
+        page.AddView(species, Fill());
 
-        col.AddView(Label("Apelido (vazio = nome da espécie)"), Fill());
+        page.AddView(Label("Apelido (vazio = nome da espécie)"), Fill());
         var nickname = Field(pk.IsNicknamed ? pk.Nickname : "");
-        col.AddView(nickname, Fill());
+        page.AddView(nickname, Fill());
 
-        col.AddView(Label("Nível"), Fill());
+        page.AddView(Label("Nível"), Fill());
         var level = Field(pk.CurrentLevel.ToString(), numeric: true);
-        col.AddView(level, Fill());
+        page.AddView(level, Fill());
 
-        var shiny = new CheckBox(this) { Text = "Brilhante (shiny)", Checked = pk.IsShiny };
-        col.AddView(shiny, Fill());
-
-        // Natures exist from generation 3 onwards.
         Spinner? nature = null;
         var natures = src.Natures;
         if (pk.Format >= 3 && natures.Count > 0)
         {
-            col.AddView(Label("Natureza"), Fill());
-            var texts = new List<string>(natures.Count);
+            page.AddView(Label("Natureza"), Fill());
             int selected = 0;
             for (int i = 0; i < natures.Count; i++)
             {
-                texts.Add(natures[i].Text);
                 if (natures[i].Value == (int)pk.Nature)
                     selected = i;
             }
-            var adapter = new ArrayAdapter<string>(this, global::Android.Resource.Layout.SimpleSpinnerItem, texts);
-            adapter.SetDropDownViewResource(global::Android.Resource.Layout.SimpleSpinnerDropDownItem);
-            nature = new Spinner(this) { Adapter = adapter };
-            nature.SetSelection(selected);
-            col.AddView(nature, Fill());
+            nature = Choice(natures.Select(z => z.Text).ToList(), selected);
+            page.AddView(nature, Fill());
         }
 
-        col.AddView(Label("Item segurado (vazio = nenhum)"), Fill());
-        var item = Picker(src.Items, pk.HeldItem);
-        col.AddView(item, Fill());
-
-        col.AddView(Label("Golpes (vazio = nenhum)"), Fill());
-        ReadOnlySpan<ushort> currentMoves = [pk.Move1, pk.Move2, pk.Move3, pk.Move4];
-        var moves = new AutoCompleteTextView[4];
-        for (int i = 0; i < 4; i++)
+        Spinner? ability = null;
+        if (pk.Format >= 3)
         {
-            moves[i] = Picker(src.Moves, currentMoves[i]);
-            if (currentMoves[i] == 0)
-                moves[i].Text = "";
-            col.AddView(moves[i], Fill());
+            var abilities = src.GetAbilityList(pk.PersonalInfo);
+            if (abilities.Count > 0)
+            {
+                page.AddView(Label("Habilidade"), Fill());
+                int selected = 0;
+                for (int i = 0; i < abilities.Count; i++)
+                {
+                    if (abilities[i].Value == pk.Ability)
+                        selected = i;
+                }
+                ability = Choice(abilities.Select(z => z.Text).ToList(), selected);
+                page.AddView(ability, Fill());
+            }
         }
 
-        var ivs = StatRow(col, $"IVs (0 a {pk.MaxIV})",
-            [pk.IV_HP, pk.IV_ATK, pk.IV_DEF, pk.IV_SPA, pk.IV_SPD, pk.IV_SPE]);
-        var evs = StatRow(col, $"EVs (0 a {pk.MaxEV})",
-            [pk.EV_HP, pk.EV_ATK, pk.EV_DEF, pk.EV_SPA, pk.EV_SPD, pk.EV_SPE]);
+        page.AddView(Label("Item segurado (vazio = nenhum)"), Fill());
+        var item = Picker(src.Items, pk.HeldItem);
+        page.AddView(item, Fill());
 
-        col.AddView(Label("Amizade (0 a 255)"), Fill());
+        int formCount = Math.Max(1, (int)pk.PersonalInfo.FormCount);
+        EditText? form = null;
+        if (formCount > 1)
+        {
+            page.AddView(Label($"Forma (0 a {formCount - 1})"), Fill());
+            form = Field(pk.Form.ToString(), numeric: true);
+            page.AddView(form, Fill());
+        }
+
+        var shiny = new CheckBox(this) { Text = "Brilhante (shiny)", Checked = pk.IsShiny };
+        page.AddView(shiny, Fill());
+
+        page.AddView(Label("Amizade (0 a 255)"), Fill());
         var friendship = Field(pk.CurrentFriendship.ToString(), numeric: true);
-        col.AddView(friendship, Fill());
+        page.AddView(friendship, Fill());
 
-        // Copies what is on screen into the Pokémon. Returns an error message, or null when it worked.
         string? Apply()
         {
             if (!TryResolve(src.Species, species.Text, out int sp) || sp <= 0)
                 return "Espécie não reconhecida. Escolha um nome da lista.";
             if (!TryResolve(src.Items, item.Text, out int heldItem))
                 return "Item não reconhecido. Escolha um nome da lista ou deixe vazio.";
-            Span<ushort> newMoves = stackalloc ushort[4];
-            for (int i = 0; i < 4; i++)
-            {
-                if (!TryResolve(src.Moves, moves[i].Text, out int move))
-                    return $"Golpe {i + 1} não reconhecido. Escolha um nome da lista ou deixe vazio.";
-                newMoves[i] = (ushort)move;
-            }
 
-            if (sp != pk.Species)
+            bool speciesChanged = sp != pk.Species;
+            if (speciesChanged)
             {
                 pk.Species = (ushort)sp;
                 pk.Form = 0;
                 pk.SetAbilityIndex(0);
                 pk.SetSaneGender(pk.GetSaneGender());
+            }
+            else
+            {
+                if (form != null)
+                    pk.Form = (byte)Math.Clamp(ParseInt(form.Text, pk.Form), 0, formCount - 1);
+                if (ability != null && ability.SelectedItemPosition >= 0)
+                    pk.SetAbilityIndex(ability.SelectedItemPosition);
             }
 
             pk.CurrentLevel = (byte)Math.Clamp(ParseInt(level.Text, pk.CurrentLevel), 1, 100);
@@ -437,9 +805,46 @@ public class MainActivity : Activity
             }
 
             pk.HeldItem = heldItem;
-            pk.SetMoves(newMoves);
-            pk.FixMoves();
+            pk.CurrentFriendship = (byte)Math.Clamp(ParseInt(friendship.Text, pk.CurrentFriendship), 0, 255);
+            Recalculate(pk);
+            return null;
+        }
 
+        // Picking a species from the list updates the preview tile straight away.
+        species.ItemClick += (_, _) =>
+        {
+            var error = Apply();
+            if (error != null)
+                Toast(error);
+            Refresh();
+        };
+        return Apply;
+    }
+
+    private Func<string?> StatsTab(LinearLayout page, PKM pk)
+    {
+        var ivs = StatRow(page, $"IVs (0 a {pk.MaxIV})",
+            [pk.IV_HP, pk.IV_ATK, pk.IV_DEF, pk.IV_SPA, pk.IV_SPD, pk.IV_SPE]);
+        var evs = StatRow(page, $"EVs (0 a {pk.MaxEV})",
+            [pk.EV_HP, pk.EV_ATK, pk.EV_DEF, pk.EV_SPA, pk.EV_SPD, pk.EV_SPE]);
+
+        try
+        {
+            var calc = pk.Clone();
+            calc.ResetPartyStats();
+            page.AddView(Label(
+                "Stats calculados\n" +
+                $"HP {calc.Stat_HPMax} · Atq {calc.Stat_ATK} · Def {calc.Stat_DEF}\n" +
+                $"AtqE {calc.Stat_SPA} · DefE {calc.Stat_SPD} · Vel {calc.Stat_SPE}"), Fill());
+        }
+        catch (Exception)
+        {
+            // The calculated stats are informative only.
+        }
+        page.AddView(Btn("Recalcular", () => Rebuild()), Fill());
+
+        return () =>
+        {
             int maxIV = pk.MaxIV, maxEV = pk.MaxEV;
             pk.IV_HP = Math.Clamp(ParseInt(ivs[0].Text, pk.IV_HP), 0, maxIV);
             pk.IV_ATK = Math.Clamp(ParseInt(ivs[1].Text, pk.IV_ATK), 0, maxIV);
@@ -453,100 +858,104 @@ public class MainActivity : Activity
             pk.EV_SPA = Math.Clamp(ParseInt(evs[3].Text, pk.EV_SPA), 0, maxEV);
             pk.EV_SPD = Math.Clamp(ParseInt(evs[4].Text, pk.EV_SPD), 0, maxEV);
             pk.EV_SPE = Math.Clamp(ParseInt(evs[5].Text, pk.EV_SPE), 0, maxEV);
-
-            pk.CurrentFriendship = (byte)Math.Clamp(ParseInt(friendship.Text, pk.CurrentFriendship), 0, 255);
-
-            if (party || pk.PartyStatsPresent)
-                pk.ResetPartyStats();
-            pk.RefreshChecksum();
+            Recalculate(pk);
             return null;
-        }
-
-        col.AddView(Btn("Checar legalidade", () =>
-        {
-            try
-            {
-                var error = Apply();
-                if (error != null)
-                {
-                    Toast(error);
-                    return;
-                }
-                var analysis = new LegalityAnalysis(pk);
-                Message(analysis.Valid ? "Legal" : "Não é legal", analysis.Report());
-            }
-            catch (Exception ex)
-            {
-                Message("Erro", ex.Message);
-            }
-        }), Fill());
-
-        col.AddView(Btn("Salvar no espaço", () =>
-        {
-            try
-            {
-                var error = Apply();
-                if (error != null)
-                {
-                    Toast(error);
-                    return;
-                }
-                store(pk);
-                sav!.State.Edited = true;
-                Toast("Salvo. Lembre de exportar o save na tela inicial.");
-                GoBack();
-            }
-            catch (Exception ex)
-            {
-                Message("Erro", ex.Message);
-            }
-        }), Fill());
-
-        col.AddView(Btn("Cancelar", GoBack), Fill());
-        return Scrollable(col);
+        };
     }
 
-    // ------------------------------------------------------------------ trainer
-    private View Trainer()
+    private Func<string?> MovesTab(LinearLayout page, PKM pk)
     {
-        var s = sav!;
-        var col = Column();
-        col.AddView(Label("Treinador", 20f), Fill());
+        var src = GameInfo.FilteredSources;
+        page.AddView(Label("Golpes (vazio = nenhum)"), Fill());
+        ushort[] currentMoves = [pk.Move1, pk.Move2, pk.Move3, pk.Move4];
+        var moves = new AutoCompleteTextView[4];
+        for (int i = 0; i < 4; i++)
+        {
+            moves[i] = Picker(src.Moves, currentMoves[i]);
+            if (currentMoves[i] == 0)
+                moves[i].Text = "";
+            page.AddView(moves[i], Fill());
+        }
+        page.AddView(Label("Os PP são restaurados ao salvar.", 12f), Fill());
 
+        return () =>
+        {
+            var newMoves = new ushort[4];
+            for (int i = 0; i < 4; i++)
+            {
+                if (!TryResolve(src.Moves, moves[i].Text, out int move))
+                    return $"Golpe {i + 1} não reconhecido. Escolha um nome da lista ou deixe vazio.";
+                newMoves[i] = (ushort)move;
+            }
+            pk.SetMoves(newMoves);
+            pk.FixMoves();
+            Recalculate(pk);
+            return null;
+        };
+    }
+
+    private Func<string?> OriginTab(LinearLayout page, PKM pk)
+    {
+        page.AddView(Label("Nome do treinador original"), Fill());
+        var ot = Field(pk.OriginalTrainerName);
+        page.AddView(ot, Fill());
+        page.AddView(Label(
+            $"ID do treinador: {pk.DisplayTID}\n" +
+            $"Jogo de origem: {GameInfo.GetVersionName(pk.Version)}\n" +
+            $"Formato dos dados: geração {pk.Format}"), Fill());
+
+        return () =>
+        {
+            var name = ot.Text?.Trim() ?? "";
+            if (name.Length == 0)
+                return "O nome do treinador original não pode ficar vazio.";
+            if (name.Length > pk.MaxStringLengthTrainer)
+                name = name[..pk.MaxStringLengthTrainer];
+            pk.OriginalTrainerName = name;
+            Recalculate(pk);
+            return null;
+        };
+    }
+
+    // ------------------------------------------------------------------ trainer dialog
+    private void TrainerDialog(SaveFile s)
+    {
+        var col = Column();
         col.AddView(Label($"Nome (até {s.MaxStringLengthTrainer} letras)"), Fill());
         var name = Field(s.OT);
         col.AddView(name, Fill());
-
         col.AddView(Label($"Dinheiro (até {s.MaxMoney})"), Fill());
         var money = Field(s.Money.ToString(), numeric: true);
         col.AddView(money, Fill());
 
-        col.AddView(Btn("Salvar", () =>
-        {
-            try
+        new AlertDialog.Builder(this)
+            .SetTitle("Treinador")!
+            .SetView(col)!
+            .SetPositiveButton("Salvar", (_, _) =>
             {
-                var text = name.Text?.Trim() ?? "";
-                if (text.Length == 0)
+                try
                 {
-                    Toast("O nome não pode ficar vazio.");
-                    return;
+                    var text = name.Text?.Trim() ?? "";
+                    if (text.Length == 0)
+                    {
+                        Toast("O nome não pode ficar vazio.");
+                        return;
+                    }
+                    if (text.Length > s.MaxStringLengthTrainer)
+                        text = text[..s.MaxStringLengthTrainer];
+                    s.OT = text;
+                    long value = long.TryParse(money.Text?.Trim(), out var m) ? m : s.Money;
+                    s.Money = (uint)Math.Clamp(value, 0, s.MaxMoney);
+                    s.State.Edited = true;
+                    Rebuild();
                 }
-                if (text.Length > s.MaxStringLengthTrainer)
-                    text = text[..s.MaxStringLengthTrainer];
-                s.OT = text;
-                long value = long.TryParse(money.Text?.Trim(), out var m) ? m : s.Money;
-                s.Money = (uint)Math.Clamp(value, 0, s.MaxMoney);
-                s.State.Edited = true;
-                Toast("Salvo. Lembre de exportar o save na tela inicial.");
-                GoBack();
-            }
-            catch (Exception ex)
-            {
-                Message("Erro", ex.Message);
-            }
-        }), Fill());
-        col.AddView(Btn("Cancelar", GoBack), Fill());
-        return Scrollable(col);
+                catch (Exception ex)
+                {
+                    Message("Erro", ex.Message);
+                }
+            })!
+            .SetNegativeButton("Cancelar", (_, _) => { })!
+            .Show();
     }
 
     // ------------------------------------------------------------------ opening and exporting files
@@ -563,6 +972,12 @@ public class MainActivity : Activity
         var s = sav;
         if (s is null)
             return;
+        var pending = applyTab?.Invoke();
+        if (pending != null)
+        {
+            Toast(pending);
+            return;
+        }
         if (!s.State.Exportable)
         {
             Toast("Este tipo de save não pode ser exportado.");
@@ -640,7 +1055,9 @@ public class MainActivity : Activity
 
         sav = loaded;
         savName = name;
+        editing = null;
         currentBox = 0;
+        currentTab = 0;
         // Point the game data lists and the legality checker at this save.
         ParseSettings.InitFromSaveFileData(loaded);
         GameInfo.FilteredSources = new FilteredGameDataSource(loaded, GameInfo.Sources);
@@ -664,6 +1081,6 @@ public class MainActivity : Activity
         }
         s.State.Edited = false;
         Toast("Save exportado.");
-        Refresh();
+        Rebuild(applyFirst: false);
     }
 }

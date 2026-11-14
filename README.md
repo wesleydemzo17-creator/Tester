@@ -22,19 +22,25 @@ dotnet build PKHeXAndroid/PKHeXAndroid.csproj -c Release
 
 ## O que esta versão faz
 
+A tela segue a organização do PKHeX de PC: editor com abas de um lado, caixas e equipe do outro
+(lado a lado com o celular deitado, um sobre o outro em pé).
+
 - Abre um arquivo de save (qualquer formato que o `PKHeX.Core` reconheça).
-- Mostra jogo, treinador, ID, dinheiro e tempo de jogo.
-- Lista as caixas e a equipe, marcando brilhantes e Pokémon que não passam na checagem de legalidade.
-- Edita um Pokémon: espécie, apelido, nível, brilhante, natureza, item, golpes, IVs, EVs e amizade.
-- Mostra o relatório de legalidade do PKHeX.
-- Edita nome e dinheiro do treinador.
-- Exporta o save editado como um arquivo novo (o original não é alterado).
+- Caixas em grade de 6 colunas e equipe, com um quadro por espaço mostrando nome, nível, cor dos tipos,
+  ★ para brilhante e ⚠ para quem não passa na checagem de legalidade.
+- Toque num espaço: **Ver** (carrega no editor), **Colocar aqui** (grava o Pokémon do editor) ou **Apagar**,
+  como o clique direito do PKHeX. Com isso dá para copiar e mover entre espaços.
+- Editor em abas: Principal (espécie, apelido, nível, natureza, habilidade, item, forma, brilhante, amizade),
+  Stats (IVs, EVs e stats calculados), Golpes e Origem (treinador original).
+- Indicador de legalidade no editor, com o relatório do PKHeX.
+- Janela do treinador (nome e dinheiro) e exportação do save como arquivo novo.
+- Se o app fechar por erro, o texto do erro aparece na próxima abertura.
 
 ## O que ainda não tem
 
-Criar Pokémon em espaço vazio, mover entre caixas, formas, habilidade, bola, local de encontro,
-mochila de itens, Pokédex, eventos, importar/exportar arquivos `.pk*`, e os nomes do jogo em
-português (o PKHeX não tem essa tradução; os nomes aparecem em inglês).
+Imagens dos Pokémon (os quadros são coloridos pelos tipos, sem sprites), criar Pokémon do zero,
+bola, local de encontro, mochila de itens, Pokédex, eventos, importar/exportar arquivos `.pk*`,
+e os nomes do jogo em português (o PKHeX não tem essa tradução; aparecem em inglês).
 
 ## Licença
 
