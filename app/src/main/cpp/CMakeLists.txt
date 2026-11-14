@@ -77,6 +77,17 @@ elseif(DESMUME_ENABLE_JIT AND IS_X86)
 	add_compile_definitions(HAVE_JIT)
 endif()
 
+# GPU 3D renderer (OpenGL ES 3.0). Needs the GLES3/EGL headers, so it is on for Android only.
+if(ANDROID)
+	option(DESMUME_ENABLE_GLES "Build the OpenGL ES 3 renderer" ON)
+else()
+	option(DESMUME_ENABLE_GLES "Build the OpenGL ES 3 renderer" OFF)
+endif()
+if(DESMUME_ENABLE_GLES)
+	list(APPEND CORE_SOURCES ${S}/OGLRender.cpp ${S}/OGLRender_3_2.cpp ${S}/OGLRender_ES3.cpp)
+	add_compile_definitions(ENABLE_OPENGL_ES)
+endif()
+
 add_library(desmume-jni SHARED
 	${CORE_SOURCES}
 	shim/shim.cpp
@@ -115,6 +126,9 @@ target_link_options(desmume-jni PRIVATE -Wl,--no-undefined)
 
 if(ANDROID)
 	target_link_libraries(desmume-jni PRIVATE log)
+	if(DESMUME_ENABLE_GLES)
+		target_link_libraries(desmume-jni PRIVATE EGL GLESv3)
+	endif()
 	target_link_options(desmume-jni PRIVATE -Wl,--gc-sections -Wl,-z,max-page-size=16384)
 else()
 	find_package(JNI REQUIRED)

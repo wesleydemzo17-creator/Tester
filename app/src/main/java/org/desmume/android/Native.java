@@ -20,6 +20,8 @@ public final class Native {
 
     public static synchronized native boolean init(String baseDir, int rasterThreads);
     public static synchronized native boolean jitAvailable();
+    public static synchronized native boolean gpuRendererAvailable();
+    public static synchronized native boolean setGpuRenderer(boolean enabled);
     public static synchronized native void setJit(boolean enabled, int blockSize);
     public static synchronized native void setAdvancedTiming(boolean enabled);
     public static synchronized native void setSoundEnabled(boolean enabled);

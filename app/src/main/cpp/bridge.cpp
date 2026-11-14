@@ -36,6 +36,12 @@
 #ifdef HAVE_JIT
 #include "arm_jit.h"
 #endif
+#ifdef ENABLE_OPENGL_ES
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#include "OGLRender.h"
+#include "OGLRender_ES3.h"
+#endif
 
 #ifdef __ANDROID__
 #include <android/log.h>
@@ -111,11 +117,119 @@ SoundInterface_struct *SNDCoreList[] = {
 	NULL
 };
 
+// The core selects a renderer by its index in this list.
+enum { CORE3D_NULL = 0, CORE3D_SOFT = 1, CORE3D_GLES = 2 };
+
 GPU3DInterface *core3DList[] = {
 	&gpu3DNull,
 	&gpu3DRasterize,
+#ifdef ENABLE_OPENGL_ES
+	&gpu3Dgl_ES_3_0,
+#endif
 	NULL
 };
+
+#ifdef ENABLE_OPENGL_ES
+// ---------------------------------------------------------------------------
+// Off-screen OpenGL ES 3.0 context for the core's GPU renderer. It renders into its own
+// framebuffer objects, so a 1x1 pbuffer is enough as the context's surface.
+// ---------------------------------------------------------------------------
+static EGLDisplay g_eglDisplay = EGL_NO_DISPLAY;
+static EGLContext g_eglContext = EGL_NO_CONTEXT;
+static EGLSurface g_eglSurface = EGL_NO_SURFACE;
+static EGLContext g_eglPrevContext = EGL_NO_CONTEXT;
+static EGLSurface g_eglPrevDraw = EGL_NO_SURFACE;
+static EGLSurface g_eglPrevRead = EGL_NO_SURFACE;
+static EGLDisplay g_eglPrevDisplay = EGL_NO_DISPLAY;
+
+static void AndroidGL_Deinit()
+{
+	if (g_eglDisplay == EGL_NO_DISPLAY) return;
+	if (eglGetCurrentContext() == g_eglContext)
+		eglMakeCurrent(g_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+	if (g_eglSurface != EGL_NO_SURFACE) eglDestroySurface(g_eglDisplay, g_eglSurface);
+	if (g_eglContext != EGL_NO_CONTEXT) eglDestroyContext(g_eglDisplay, g_eglContext);
+	g_eglSurface = EGL_NO_SURFACE;
+	g_eglContext = EGL_NO_CONTEXT;
+	g_eglDisplay = EGL_NO_DISPLAY; // the display itself is shared with the app's own surface: never terminate it
+}
+
+static bool AndroidGL_Init()
+{
+	if (g_eglContext != EGL_NO_CONTEXT) return true;
+
+	g_eglDisplay = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+	if (g_eglDisplay == EGL_NO_DISPLAY || !eglInitialize(g_eglDisplay, NULL, NULL))
+	{
+		LOGI("EGL: could not initialise the display");
+		g_eglDisplay = EGL_NO_DISPLAY;
+		return false;
+	}
+
+	const EGLint confAttr[] = {
+		EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
+		EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
+		EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT_KHR,
+		EGL_NONE
+	};
+	EGLConfig conf;
+	EGLint numConfigs = 0;
+	if (!eglChooseConfig(g_eglDisplay, confAttr, &conf, 1, &numConfigs) || numConfigs < 1)
+	{
+		LOGI("EGL: no OpenGL ES 3 config available");
+		g_eglDisplay = EGL_NO_DISPLAY;
+		return false;
+	}
+
+	const EGLint ctxAttr[] = { EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE };
+	g_eglContext = eglCreateContext(g_eglDisplay, conf, EGL_NO_CONTEXT, ctxAttr);
+	if (g_eglContext == EGL_NO_CONTEXT)
+	{
+		LOGI("EGL: could not create an OpenGL ES 3 context (0x%x)", (unsigned)eglGetError());
+		g_eglDisplay = EGL_NO_DISPLAY;
+		return false;
+	}
+
+	const EGLint pbufferAttr[] = { EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE };
+	g_eglSurface = eglCreatePbufferSurface(g_eglDisplay, conf, pbufferAttr);
+	if (g_eglSurface == EGL_NO_SURFACE)
+	{
+		LOGI("EGL: could not create the pbuffer surface (0x%x)", (unsigned)eglGetError());
+		AndroidGL_Deinit();
+		return false;
+	}
+	LOGI("EGL: OpenGL ES 3 context ready for the 3D renderer");
+	return true;
+}
+
+static bool AndroidGL_Begin()
+{
+	if (g_eglContext == EGL_NO_CONTEXT) return false;
+	g_eglPrevDisplay = eglGetCurrentDisplay();
+	g_eglPrevContext = eglGetCurrentContext();
+	g_eglPrevDraw = eglGetCurrentSurface(EGL_DRAW);
+	g_eglPrevRead = eglGetCurrentSurface(EGL_READ);
+	if (g_eglPrevContext == g_eglContext) return true;
+	return eglMakeCurrent(g_eglDisplay, g_eglSurface, g_eglSurface, g_eglContext) == EGL_TRUE;
+}
+
+static void AndroidGL_End()
+{
+	if (g_eglContext == EGL_NO_CONTEXT || g_eglPrevContext == g_eglContext) return;
+	if (g_eglPrevContext != EGL_NO_CONTEXT && g_eglPrevDisplay != EGL_NO_DISPLAY)
+		eglMakeCurrent(g_eglPrevDisplay, g_eglPrevDraw, g_eglPrevRead, g_eglPrevContext);
+	else
+		eglMakeCurrent(g_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+}
+
+static bool AndroidGL_FramebufferDidResize(const bool isFBOSupported, size_t w, size_t h)
+{
+	// The renderer draws into framebuffer objects; the pbuffer never needs to change size.
+	return isFBOSupported;
+}
+#endif // ENABLE_OPENGL_ES
+
+static int g_core3D = CORE3D_NULL;
 
 // ---------------------------------------------------------------------------
 static bool g_inited = false;
@@ -172,8 +286,24 @@ JNIFN(jboolean, init)(JNIEnv *env, jclass, jstring baseDir, jint rasterThreads)
 	SPU_SetSynchMode(0, 0);
 	SPU_SetVolume(100);
 
-	if (!GPU->Change3DRendererByID(RENDERID_SOFTRASTERIZER))
-		GPU->Change3DRendererByID(RENDERID_NULL);
+#ifdef ENABLE_OPENGL_ES
+	OGLLoadEntryPoints_ES_3_0_Func = &OGLLoadEntryPoints_ES_3_0;
+	OGLCreateRenderer_ES_3_0_Func = &OGLCreateRenderer_ES_3_0;
+	oglrender_init = &AndroidGL_Init;
+	oglrender_deinit = &AndroidGL_Deinit;
+	oglrender_beginOpenGL = &AndroidGL_Begin;
+	oglrender_endOpenGL = &AndroidGL_End;
+	oglrender_framebufferDidResizeCallback = &AndroidGL_FramebufferDidResize;
+	CommonSettings.GFX3D_Renderer_MultisampleSize = 0;
+#endif
+
+	if (GPU->Change3DRendererByID(CORE3D_SOFT))
+		g_core3D = CORE3D_SOFT;
+	else
+	{
+		GPU->Change3DRendererByID(CORE3D_NULL);
+		g_core3D = CORE3D_NULL;
+	}
 
 	slot2_Init();
 	slot2_Change(NDS_SLOT2_AUTO);
@@ -182,6 +312,45 @@ JNIFN(jboolean, init)(JNIEnv *env, jclass, jstring baseDir, jint rasterThreads)
 	g_inited = true;
 	LOGI("DeSmuME core ready (raster threads: %d, base dir: %s)", threads, g_desmumeBaseDir.c_str());
 	return JNI_TRUE;
+}
+
+JNIFN(jboolean, gpuRendererAvailable)(JNIEnv *, jclass)
+{
+#ifdef ENABLE_OPENGL_ES
+	return JNI_TRUE;
+#else
+	return JNI_FALSE;
+#endif
+}
+
+// Chooses who draws the DS 3D graphics: the GPU (OpenGL ES 3) or the CPU (SoftRasterizer).
+// Returns false if the GPU renderer was requested but could not start; the software one is then used.
+JNIFN(jboolean, setGpuRenderer)(JNIEnv *, jclass, jboolean enabled)
+{
+	if (!g_inited) return JNI_FALSE;
+	const int wanted = (enabled == JNI_TRUE) ? CORE3D_GLES : CORE3D_SOFT;
+	if (wanted == g_core3D) return JNI_TRUE;
+
+#ifdef ENABLE_OPENGL_ES
+	if (wanted == CORE3D_GLES)
+	{
+		if (GPU->Change3DRendererByID(CORE3D_GLES))
+		{
+			g_core3D = CORE3D_GLES;
+			LOGI("3D renderer: OpenGL ES 3");
+			return JNI_TRUE;
+		}
+		LOGI("3D renderer: OpenGL ES 3 failed to start, using the software rasterizer");
+	}
+#endif
+	if (GPU->Change3DRendererByID(CORE3D_SOFT))
+		g_core3D = CORE3D_SOFT;
+	else
+	{
+		GPU->Change3DRendererByID(CORE3D_NULL);
+		g_core3D = CORE3D_NULL;
+	}
+	return (wanted == CORE3D_SOFT) ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIFN(jboolean, jitAvailable)(JNIEnv *, jclass)
