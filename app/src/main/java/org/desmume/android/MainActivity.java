@@ -33,6 +33,8 @@ public class MainActivity extends Activity implements EmuView.Listener {
     private boolean coreReady;
     private boolean resumed;
     private int modalCount;
+    private boolean gpuActive;
+    private boolean rendererApplied;
     private volatile boolean jitGuardArmed;
     private volatile int jitGuardTicks;
 
@@ -56,6 +58,11 @@ public class MainActivity extends Activity implements EmuView.Listener {
         if (prefs.getBoolean("jit_boot_pending", false)) {
             prefs.edit().putBoolean("jit", false).putBoolean("jit_boot_pending", false).apply();
             toast("O JIT travou na última execução e foi desligado. Reative em Configurações se quiser.");
+        }
+        // Same safety net for the GPU renderer.
+        if (prefs.getBoolean("gpu_boot_pending", false)) {
+            prefs.edit().putBoolean("gpu3d", false).putBoolean("gpu_boot_pending", false).apply();
+            toast("O 3D pela GPU travou na última execução e voltou para a CPU.");
         }
 
         coreReady = Native.init(baseDir.getAbsolutePath(), 0);
@@ -86,7 +93,7 @@ public class MainActivity extends Activity implements EmuView.Listener {
         // A clean pause means the JIT did not crash the process.
         if (jitGuardArmed) {
             jitGuardArmed = false;
-            prefs.edit().putBoolean("jit_boot_pending", false).apply();
+            clearCrashGuards();
         }
         super.onPause();
     }
@@ -134,9 +141,35 @@ public class MainActivity extends Activity implements EmuView.Listener {
         // "smooth" is the old on/off option; it maps to the bilinear shader.
         view.setShader(prefs.getInt("shader", prefs.getBoolean("smooth", false) ? 1 : 0));
         view.setResolutionScale(prefs.getInt("res_scale", 1));
+        applyRenderer();
         view.setShowFps(prefs.getBoolean("show_fps", true));
+        view.setHud(prefs.getBoolean("hud_details", true), prefs.getInt("hud_scale", 100),
+                prefs.getInt("hud_opacity", 80), prefs.getInt("hud_corner", 0));
         view.setShowControls(prefs.getBoolean("show_controls", true));
         view.setFrameskip(prefs.getInt("frameskip", EmuView.FRAMESKIP_AUTO));
+    }
+
+    /** Switches the DS 3D graphics between the GPU (OpenGL ES 3) and the CPU renderer. */
+    private void applyRenderer() {
+        boolean want = prefs.getBoolean("gpu3d", false) && Native.gpuRendererAvailable();
+        // The first call always goes to the core, which may still hold a renderer from before.
+        if (!rendererApplied || want != gpuActive) {
+            rendererApplied = true;
+            if (want) {
+                // Starting the GPU renderer is the risky moment: remember it in case the app dies here.
+                prefs.edit().putBoolean("gpu_boot_pending", true).commit();
+                jitGuardTicks = 0;
+                jitGuardArmed = true;
+            }
+            boolean ok = Native.setGpuRenderer(want);
+            if (want && !ok) {
+                prefs.edit().putBoolean("gpu3d", false).putBoolean("gpu_boot_pending", false).apply();
+                toast("Este aparelho não conseguiu iniciar o 3D pela GPU. Usando a CPU.");
+                want = false;
+            }
+            gpuActive = want;
+        }
+        view.setRendererLabel(gpuActive ? "GPU (OpenGL ES 3)" : "CPU");
     }
 
     // ------------------------------------------------------------------ EmuView.Listener
@@ -150,7 +183,7 @@ public class MainActivity extends Activity implements EmuView.Listener {
         // Called from the emulation thread.
         if (jitGuardArmed && ++jitGuardTicks * 64 >= JIT_STABLE_FRAMES) {
             jitGuardArmed = false;
-            prefs.edit().putBoolean("jit_boot_pending", false).apply();
+            clearCrashGuards();
         }
     }
 
@@ -180,10 +213,14 @@ public class MainActivity extends Activity implements EmuView.Listener {
         }
         labels.add("Resolução interna: " + prefs.getInt("res_scale", 1) + "x");
         actions.add(this::showResolution);
+        labels.add("3D desenhado por: " + (gpuActive ? "GPU (experimental)" : "CPU"));
+        actions.add(this::showRenderer);
         labels.add("Shader");
         actions.add(this::showShaders);
         labels.add("Layout das telas");
         actions.add(this::showLayouts);
+        labels.add("Monitor de desempenho");
+        actions.add(this::showHud);
         labels.add("Configurações");
         actions.add(this::showSettings);
         labels.add("Frameskip");
@@ -197,13 +234,12 @@ public class MainActivity extends Activity implements EmuView.Listener {
     }
 
     private void showSettings() {
-        final String[] keys = {"jit", "sound", "advanced_timing", "show_fps", "show_controls"};
-        final boolean[] defaults = {true, true, true, true, true};
+        final String[] keys = {"jit", "sound", "advanced_timing", "show_controls"};
+        final boolean[] defaults = {true, true, true, true};
         final String[] labels = {
                 Native.jitAvailable() ? "JIT (recompilador dinâmico) — mais rápido" : "JIT (indisponível neste aparelho)",
                 "Som",
                 "Timing avançado (mais compatível, mais lento)",
-                "Mostrar FPS",
                 "Mostrar controles na tela"};
         final boolean[] values = new boolean[keys.length];
         for (int i = 0; i < keys.length; i++) values[i] = prefs.getBoolean(keys[i], defaults[i]);
@@ -241,6 +277,64 @@ public class MainActivity extends Activity implements EmuView.Listener {
                 }));
     }
 
+    private void showRenderer() {
+        if (!Native.gpuRendererAvailable()) {
+            toast("O 3D pela GPU não está disponível nesta versão.");
+            return;
+        }
+        final String[] labels = {
+                "CPU (software) — mais compatível",
+                "GPU (OpenGL ES 3) — experimental, melhor em 2x–4x"};
+        dialog(new AlertDialog.Builder(this)
+                .setTitle("Quem desenha o 3D")
+                .setSingleChoiceItems(labels, prefs.getBoolean("gpu3d", false) ? 1 : 0, (d, which) -> {
+                    d.dismiss();
+                    prefs.edit().putBoolean("gpu3d", which == 1).apply();
+                    applyRenderer();
+                }));
+    }
+
+    private static int next(int[] values, int current) {
+        for (int i = 0; i < values.length; i++) {
+            if (values[i] == current) return values[(i + 1) % values.length];
+        }
+        return values[0];
+    }
+
+    /** Performance monitor options. Each tap changes one option and reopens the list. */
+    private void showHud() {
+        final boolean on = prefs.getBoolean("show_fps", true);
+        final boolean details = prefs.getBoolean("hud_details", true);
+        final int scale = prefs.getInt("hud_scale", 100);
+        final int opacity = prefs.getInt("hud_opacity", 80);
+        final int corner = prefs.getInt("hud_corner", 0);
+        final String[] labels = {
+                "Exibir: " + (on ? "ligado" : "desligado"),
+                "Detalhes (CPU, GPU, RAM, clocks): " + (details ? "ligado" : "só FPS"),
+                "Tamanho: " + scale + "%  (toque para mudar)",
+                "Opacidade: " + opacity + "%  (toque para mudar)",
+                "Canto: " + EmuView.HUD_CORNERS[Math.max(0, Math.min(3, corner))],
+                "Fechar"};
+        dialog(new AlertDialog.Builder(this)
+                .setTitle("Monitor de desempenho")
+                .setItems(labels, (d, which) -> {
+                    SharedPreferences.Editor e = prefs.edit();
+                    if (which == 0) e.putBoolean("show_fps", !on);
+                    else if (which == 1) e.putBoolean("hud_details", !details);
+                    else if (which == 2) e.putInt("hud_scale", next(new int[]{70, 85, 100, 125, 150, 200}, scale));
+                    else if (which == 3) e.putInt("hud_opacity", next(new int[]{100, 80, 60, 40, 25}, opacity));
+                    else if (which == 4) e.putInt("hud_corner", (corner + 1) % 4);
+                    e.apply();
+                    applySettings();
+                    if (which < 5) showHudAgain();
+                }));
+    }
+
+    private void showHudAgain() {
+        // Runs after the current dialog has finished closing.
+        view.post(this::showHud);
+    }
+
     private void showShaders() {
         int cur = prefs.getInt("shader", prefs.getBoolean("smooth", false) ? 1 : 0);
         dialog(new AlertDialog.Builder(this)
@@ -264,6 +358,9 @@ public class MainActivity extends Activity implements EmuView.Listener {
                     d.dismiss();
                     if (which < n) {
                         view.setLayoutPreset(which);
+                        if (which >= 4 && prefs.getInt("shader", 0) == 0) {
+                            toast("Dica: com a tela esticada, o shader \"Bicúbico\" e a resolução 2x ou mais evitam o serrilhado.");
+                        }
                     } else {
                         view.startLayoutEdit();
                     }
@@ -400,10 +497,15 @@ public class MainActivity extends Activity implements EmuView.Listener {
         }, "rom-import").start();
     }
 
+    private void clearCrashGuards() {
+        prefs.edit().putBoolean("jit_boot_pending", false).putBoolean("gpu_boot_pending", false).apply();
+    }
+
     private void armJitGuard() {
-        if (prefs.getBoolean("jit", true) && Native.jitAvailable()) {
+        boolean jit = prefs.getBoolean("jit", true) && Native.jitAvailable();
+        if (jit || gpuActive) {
             // commit(): must hit the disk before native code can crash.
-            prefs.edit().putBoolean("jit_boot_pending", true).commit();
+            prefs.edit().putBoolean("jit_boot_pending", jit).putBoolean("gpu_boot_pending", gpuActive).commit();
             jitGuardTicks = 0;
             jitGuardArmed = true;
         }
@@ -420,7 +522,7 @@ public class MainActivity extends Activity implements EmuView.Listener {
             view.setFastForward(false);
         } else {
             jitGuardArmed = false;
-            prefs.edit().putBoolean("jit_boot_pending", false).apply();
+            clearCrashGuards();
             toast("Não foi possível carregar esta ROM");
         }
     }

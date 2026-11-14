@@ -15,10 +15,11 @@ final class Shaders {
             "Scanlines",
             "Cores do DS (tela original)",
             "Grade LCD + cores do DS",
+            "Bicúbico (suave, bom para tela esticada)",
     };
 
     /** true = sample with GL_LINEAR, false = GL_NEAREST. */
-    static final boolean[] LINEAR = {false, true, true, true, true, false, true};
+    static final boolean[] LINEAR = {false, true, true, true, true, false, true, false};
 
     static final String VERTEX =
             "attribute vec2 aPos;\n"
@@ -50,6 +51,28 @@ final class Shaders {
             + "  vec2 region = 0.5 - 0.5 / scale;\n"
             + "  vec2 adj = (f - clamp(f, -region, region)) * scale + 0.5;\n"
             + "  return (floor(texel) + adj) / uTexSize;\n"
+            + "}\n"
+            // Catmull-Rom bicubic filter: smooth enlargement without the blur of plain bilinear.
+            + "vec4 cubic(float t) {\n"
+            + "  float t2 = t * t;\n"
+            + "  float t3 = t2 * t;\n"
+            + "  return vec4(-0.5 * t3 + t2 - 0.5 * t, 1.5 * t3 - 2.5 * t2 + 1.0,\n"
+            + "              -1.5 * t3 + 2.0 * t2 + 0.5 * t, 0.5 * t3 - 0.5 * t2);\n"
+            + "}\n"
+            + "vec3 bicubic(vec2 uv) {\n"
+            + "  vec2 p = uv * uTexSize - 0.5;\n"
+            + "  vec2 base = floor(p);\n"
+            + "  vec2 f = p - base;\n"
+            + "  vec4 wx = cubic(f.x);\n"
+            + "  vec4 wy = cubic(f.y);\n"
+            + "  vec3 sum = vec3(0.0);\n"
+            + "  for (int y = 0; y < 4; y++) {\n"
+            + "    for (int x = 0; x < 4; x++) {\n"
+            + "      vec2 texel = base + vec2(float(x) - 0.5, float(y) - 0.5);\n"
+            + "      sum += texture2D(uTex, texel / uTexSize).rgb * (wx[x] * wy[y]);\n"
+            + "    }\n"
+            + "  }\n"
+            + "  return clamp(sum, 0.0, 1.0);\n"
             + "}\n"
             // Approximates the washed-out, slightly cool look of the original DS panel.
             + "vec3 dsColor(vec3 c) {\n"
@@ -97,5 +120,7 @@ final class Shaders {
             + "  vec3 c = dsColor(texture2D(uTex, sharpUv(vUv)).rgb);\n"
             + "  gl_FragColor = vec4(c * lcdGrid(vUv) * 1.12, 1.0);\n"
             + "}\n",
+            // 7: bicubic
+            "void main() { gl_FragColor = vec4(bicubic(vUv), 1.0); }\n",
     };
 }

@@ -38,6 +38,9 @@ O APK sai em `app/build/outputs/apk/release/`. Ele é assinado com a chave de de
 | Resolução interna | 1x a 4x (até 1024×768 por tela) para os gráficos 3D, pelo SoftRasterizer. Pesa bastante na CPU. |
 | Shaders | Telas desenhadas com OpenGL ES 2.0: nítido, bilinear, sharp bilinear, grade LCD, scanlines e cores do DS. |
 | Layout livre | Predefinições (empilhado, lado a lado, uma tela grande) e editor: arrastar para mover, pinça para redimensionar. Salvo por orientação. |
+| 3D pela GPU | Opcional e experimental: usa o renderizador OpenGL ES 3 do próprio DeSmuME num contexto EGL fora da tela. Volta sozinho para a CPU se travar. |
+| Monitor de desempenho | FPS, uso de CPU do app, clock de cada núcleo, uso e clock da GPU (quando o Android libera), RAM. Tamanho, opacidade e canto ajustáveis. |
+| Tela esticada | No editor, o quadrado do canto estica largura e altura separadamente; há predefinições que preenchem a tela e um shader bicúbico para suavizar. |
 | Frameskip | Automático (pula até 3 quadros quando atrasa) ou fixo de 0 a 4. |
 | Vídeo | Quadro em RGB565 enviado como textura e escalado pela GPU. |
 | Áudio | Mixagem assíncrona, uma fatia por quadro, direto para `AudioTrack`. |
@@ -47,8 +50,8 @@ O APK sai em `app/build/outputs/apk/release/`. Ele é assinado com a chave de de
 ## Limitações conhecidas
 
 - Somente aparelhos ARM de 64 bits, Android 8.0+.
-- 3D renderizado por software (o OpenGL ES é usado só para exibir as telas e aplicar shaders).
-- As telas mantêm a proporção 4:3 ao redimensionar.
+- Esticar a tela só deforma a imagem 4:3 do DS; o jogo não passa a renderizar em 16:9 de verdade.
+- Uso e clock da GPU dependem de arquivos do sistema que muitos aparelhos bloqueiam para apps.
 - Sem microfone, Wi-Fi, cheats e filtros de imagem.
 - Sem BIOS/firmware externos (usa a emulação HLE do núcleo).
 

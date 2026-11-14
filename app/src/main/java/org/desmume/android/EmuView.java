@@ -37,7 +37,11 @@ public class EmuView extends FrameLayout implements Runnable {
             "Lado a lado",
             "Tela de cima grande",
             "Tela de baixo grande",
+            "Esticadas: as duas preenchem a tela",
+            "Tela de cima em tela cheia (esticada)",
     };
+    public static final String[] HUD_CORNERS = {
+            "superior esquerdo", "superior direito", "inferior esquerdo", "inferior direito"};
     private static final float ASPECT = (float) Native.SCREEN_H / Native.SCREEN_W; // height / width
     private static final long FRAME_NS = 16_715_000L; // 59.8261 Hz
 
@@ -68,10 +72,25 @@ public class EmuView extends FrameLayout implements Runnable {
     // Layout editor state (UI thread).
     private boolean editMode;
     private int editSel = -1;
-    private boolean pinching;
-    private float lastX, lastY, pinchStartDist, pinchStartW;
+    private int editLast;
+    private boolean pinching, resizing;
+    private float lastX, lastY, pinchStartDist, pinchStartW, pinchStartH;
     private final RectF editDone = new RectF();
     private final RectF editReset = new RectF();
+    private final RectF editAspect = new RectF();
+    private final RectF editFill = new RectF();
+
+    // Performance monitor (HUD).
+    private final PerfMonitor perf;
+    private final float density;
+    private final Paint hudText = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint hudBack = new Paint();
+    private volatile String[] hudLines = new String[0];
+    private volatile boolean hudDetails = true;
+    private volatile String rendererLabel = "CPU";
+    private float hudScale = 1f;
+    private int hudAlpha = 204;
+    private int hudCorner;
     private final RectF dpad = new RectF();
     private final RectF menuBtn = new RectF();
     private final ArrayList<Btn> buttons = new ArrayList<>();
@@ -118,6 +137,12 @@ public class EmuView extends FrameLayout implements Runnable {
         overlay = new Overlay(context);
         addView(overlay);
 
+        perf = new PerfMonitor(context);
+        density = context.getResources().getDisplayMetrics().density;
+        hudText.setColor(Color.WHITE);
+        hudBack.setStyle(Paint.Style.FILL);
+        hudBack.setColor(Color.BLACK);
+
         setFocusable(true);
         setFocusableInTouchMode(true);
         ctrlFill.setStyle(Paint.Style.FILL);
@@ -142,6 +167,23 @@ public class EmuView extends FrameLayout implements Runnable {
     public boolean isFastForward() { return fastForward; }
     public void setShader(int index) { renderer.setShader(index); glView.requestRender(); }
     public void setShowFps(boolean v) { showFps = v; overlay.invalidate(); }
+    public void setRendererLabel(String label) { rendererLabel = label; }
+
+    /**
+     * Configures the performance monitor.
+     * @param details show CPU, GPU, RAM and clock lines besides the FPS
+     * @param scalePercent text size, 100 = normal
+     * @param opacityPercent 100 = solid, lower = more see-through
+     * @param corner index into HUD_CORNERS
+     */
+    public void setHud(boolean details, int scalePercent, int opacityPercent, int corner) {
+        hudDetails = details;
+        hudScale = Math.max(50, Math.min(300, scalePercent)) / 100f;
+        hudAlpha = Math.max(10, Math.min(100, opacityPercent)) * 255 / 100;
+        hudCorner = Math.max(0, Math.min(3, corner));
+        if (!details && hudLines.length > 1) hudLines = new String[]{hudLines[0]};
+        overlay.invalidate();
+    }
     public void setShowControls(boolean v) { showControls = v; overlay.invalidate(); }
     public void setPaused(boolean v) { paused = v; }
     public void setPadKeys(int keys) { padKeys = keys; overlay.invalidate(); }
@@ -196,9 +238,27 @@ public class EmuView extends FrameLayout implements Runnable {
 
     private void applyPreset(int preset) {
         final float w = viewW, h = viewH;
-        if (preset < 1 || preset > 3) {
+        if (preset < 1 || preset > 5) {
             dstTop.set(defTop);
             dstBottom.set(defBottom);
+            return;
+        }
+        if (preset == 4) {
+            // Both screens stretched to cover the whole view.
+            if (portrait()) {
+                dstTop.set(0, 0, w, h / 2f);
+                dstBottom.set(0, h / 2f, w, h);
+            } else {
+                dstTop.set(0, 0, w / 2f, h);
+                dstBottom.set(w / 2f, 0, w, h);
+            }
+            return;
+        }
+        if (preset == 5) {
+            // Top screen stretched over everything, touch screen as a small window in the corner.
+            dstTop.set(0, 0, w, h);
+            float bw = portrait() ? w * 0.4f : w * 0.26f;
+            dstBottom.set(w - bw, h - bw * ASPECT, w, h);
             return;
         }
         if (portrait()) {
@@ -244,12 +304,19 @@ public class EmuView extends FrameLayout implements Runnable {
         String v = prefs.getString(customKey(), null);
         if (v == null) return false;
         String[] p = v.split(",");
-        if (p.length != 6) return false;
+        if (p.length != 6 && p.length != 8) return false;
         try {
-            float[] f = new float[6];
-            for (int i = 0; i < 6; i++) f[i] = Float.parseFloat(p[i]);
-            place(dstTop, f[0] * viewW, f[1] * viewH, f[2] * viewW);
-            place(dstBottom, f[3] * viewW, f[4] * viewH, f[5] * viewW);
+            float[] f = new float[p.length];
+            for (int i = 0; i < p.length; i++) f[i] = Float.parseFloat(p[i]);
+            if (p.length == 6) {
+                // Older format: left, top, width (height followed the 4:3 shape).
+                place(dstTop, f[0] * viewW, f[1] * viewH, f[2] * viewW);
+                place(dstBottom, f[3] * viewW, f[4] * viewH, f[5] * viewW);
+            } else {
+                // left, top, width, height, each as a fraction of the view.
+                dstTop.set(f[0] * viewW, f[1] * viewH, (f[0] + f[2]) * viewW, (f[1] + f[3]) * viewH);
+                dstBottom.set(f[4] * viewW, f[5] * viewH, (f[4] + f[6]) * viewW, (f[5] + f[7]) * viewH);
+            }
             clampRect(dstTop);
             clampRect(dstBottom);
             return true;
@@ -259,22 +326,29 @@ public class EmuView extends FrameLayout implements Runnable {
     }
 
     private void saveCustom() {
-        String v = String.format(Locale.US, "%.5f,%.5f,%.5f,%.5f,%.5f,%.5f",
-                dstTop.left / viewW, dstTop.top / viewH, dstTop.width() / viewW,
-                dstBottom.left / viewW, dstBottom.top / viewH, dstBottom.width() / viewW);
+        String v = String.format(Locale.US, "%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f",
+                dstTop.left / viewW, dstTop.top / viewH, dstTop.width() / viewW, dstTop.height() / viewH,
+                dstBottom.left / viewW, dstBottom.top / viewH, dstBottom.width() / viewW, dstBottom.height() / viewH);
         prefs.edit().putString(customKey(), v).putInt(presetKey(), LAYOUT_CUSTOM).apply();
     }
 
-    /** Keeps a screen inside the view and within the allowed size range. */
+    private float minScreenW() { return Math.min(viewW, viewH) * 0.2f; }
+    private float minScreenH() { return minScreenW() * ASPECT; }
+
+    /** Keeps a screen inside the view and within the allowed size range. Width and height are independent. */
     private void clampRect(RectF r) {
-        float maxW = Math.min(viewW, viewH / ASPECT);
-        float minW = Math.min(maxW, Math.min(viewW, viewH) * 0.2f);
-        float rw = Math.max(minW, Math.min(maxW, r.width()));
-        float rh = rw * ASPECT;
+        float rw = Math.max(Math.min(minScreenW(), viewW), Math.min(viewW, r.width()));
+        float rh = Math.max(Math.min(minScreenH(), viewH), Math.min(viewH, r.height()));
         float cx = r.centerX(), cy = r.centerY();
         float left = Math.max(0f, Math.min(viewW - rw, cx - rw / 2f));
         float top = Math.max(0f, Math.min(viewH - rh, cy - rh / 2f));
         r.set(left, top, left + rw, top + rh);
+    }
+
+    /** The square in a screen's bottom-right corner that stretches it freely in the editor. */
+    private boolean onHandle(RectF r, float x, float y) {
+        float hs = Math.min(unit * 1.1f, Math.min(r.width(), r.height()) * 0.45f);
+        return x >= r.right - hs && x <= r.right + hs * 0.3f && y >= r.bottom - hs && y <= r.bottom + hs * 0.3f;
     }
 
     private void pushRects() {
@@ -297,7 +371,9 @@ public class EmuView extends FrameLayout implements Runnable {
     public void startLayoutEdit() {
         editMode = true;
         editSel = -1;
+        editLast = 0;
         pinching = false;
+        resizing = false;
         touchKeys = 0;
         stylusDown = false;
         stylusPointerId = -1;
@@ -344,9 +420,13 @@ public class EmuView extends FrameLayout implements Runnable {
             menuBtn.set(rc - bw / 2f, bh * 2.2f, rc + bw / 2f, bh * 3.2f);
         }
         // Layout editor buttons, bottom centre.
-        float ew = unit * 3.4f, eh = unit * 0.8f, eg = unit * 0.2f, ey = h - eh * 1.4f;
-        editReset.set(w / 2f - ew - eg, ey, w / 2f - eg, ey + eh);
-        editDone.set(w / 2f + eg, ey, w / 2f + eg + ew, ey + eh);
+        float eg = unit * 0.15f;
+        float ew = Math.min(unit * 2.6f, (w - eg * 5f) / 4f), eh = unit * 0.8f, ey = h - eh * 1.4f;
+        float ex = (w - ew * 4f - eg * 3f) / 2f;
+        editReset.set(ex, ey, ex + ew, ey + eh);
+        editAspect.set(ex + (ew + eg), ey, ex + (ew + eg) + ew, ey + eh);
+        editFill.set(ex + (ew + eg) * 2f, ey, ex + (ew + eg) * 2f + ew, ey + eh);
+        editDone.set(ex + (ew + eg) * 3f, ey, ex + (ew + eg) * 3f + ew, ey + eh);
         textPaint.setTextSize(unit * 0.42f);
         ctrlStroke.setStrokeWidth(Math.max(2f, unit * 0.04f));
     }
@@ -400,7 +480,25 @@ public class EmuView extends FrameLayout implements Runnable {
                     pushRects();
                     return true;
                 }
-                editSel = dstBottom.contains(x, y) ? 1 : (dstTop.contains(x, y) ? 0 : -1);
+                if (editAspect.contains(x, y) || editFill.contains(x, y)) {
+                    RectF r = (editLast == 0) ? dstTop : dstBottom;
+                    if (editFill.contains(x, y)) {
+                        r.set(0, 0, viewW, viewH);
+                    } else {
+                        // Back to the DS shape, keeping the width (or the height if that would not fit).
+                        float nw = Math.min(r.width(), viewH / ASPECT);
+                        float cx = r.centerX(), cy = r.centerY();
+                        r.set(cx - nw / 2f, cy - nw * ASPECT / 2f, cx + nw / 2f, cy + nw * ASPECT / 2f);
+                        clampRect(r);
+                    }
+                    pushRects();
+                    return true;
+                }
+                resizing = false;
+                if (onHandle(dstBottom, x, y)) { editSel = 1; resizing = true; }
+                else if (onHandle(dstTop, x, y)) { editSel = 0; resizing = true; }
+                else editSel = dstBottom.contains(x, y) ? 1 : (dstTop.contains(x, y) ? 0 : -1);
+                if (editSel >= 0) editLast = editSel;
                 pinching = false;
                 lastX = x;
                 lastY = y;
@@ -413,9 +511,12 @@ public class EmuView extends FrameLayout implements Runnable {
                         editSel = dstBottom.contains(x, y) ? 1 : (dstTop.contains(x, y) ? 0 : -1);
                     }
                     if (editSel >= 0) {
+                        editLast = editSel;
                         pinchStartDist = Math.max(1f, (float) Math.hypot(e.getX(0) - e.getX(1), e.getY(0) - e.getY(1)));
                         pinchStartW = (editSel == 0 ? dstTop : dstBottom).width();
+                        pinchStartH = (editSel == 0 ? dstTop : dstBottom).height();
                         pinching = true;
+                        resizing = false;
                     }
                 }
                 break;
@@ -424,10 +525,21 @@ public class EmuView extends FrameLayout implements Runnable {
                 if (editSel < 0) break;
                 RectF r = (editSel == 0) ? dstTop : dstBottom;
                 if (pinching && e.getPointerCount() >= 2) {
+                    // Pinch scales the screen while keeping whatever shape it has now.
                     float d = (float) Math.hypot(e.getX(0) - e.getX(1), e.getY(0) - e.getY(1));
-                    float nw = pinchStartW * d / pinchStartDist;
+                    float k = d / pinchStartDist;
+                    k = Math.min(k, Math.min(viewW / pinchStartW, viewH / pinchStartH));
+                    float nw = pinchStartW * k, nh = pinchStartH * k;
                     float cx = r.centerX(), cy = r.centerY();
-                    r.set(cx - nw / 2f, cy - nw * ASPECT / 2f, cx + nw / 2f, cy + nw * ASPECT / 2f);
+                    r.set(cx - nw / 2f, cy - nh / 2f, cx + nw / 2f, cy + nh / 2f);
+                } else if (resizing) {
+                    // Corner handle: stretch width and height independently.
+                    float x = e.getX(0), y = e.getY(0);
+                    float right = Math.max(r.left + minScreenW(), Math.min(viewW, r.right + (x - lastX)));
+                    float bottom = Math.max(r.top + minScreenH(), Math.min(viewH, r.bottom + (y - lastY)));
+                    r.set(r.left, r.top, right, bottom);
+                    lastX = x;
+                    lastY = y;
                 } else if (!pinching) {
                     float x = e.getX(0), y = e.getY(0);
                     r.offset(x - lastX, y - lastY);
@@ -453,6 +565,7 @@ public class EmuView extends FrameLayout implements Runnable {
                 if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
                     editSel = -1;
                     pinching = false;
+                    resizing = false;
                     overlay.invalidate();
                 }
                 break;
@@ -570,37 +683,65 @@ public class EmuView extends FrameLayout implements Runnable {
                 c.drawText("MENU \u2192 Abrir ROM", dstBottom.centerX(), dstBottom.centerY() + ts, textPaint);
             }
             drawControls(c);
-            if (showFps && !noRom) {
-                textPaint.setTextAlign(Paint.Align.LEFT);
-                c.drawText(fpsText, dstTop.left + 8, dstTop.top + textPaint.getTextSize() + 4, textPaint);
-                textPaint.setTextAlign(Paint.Align.CENTER);
-            }
+            if (showFps && !noRom) drawHud(c);
         }
+    }
+
+    /** Performance monitor: a small text box in one corner of the view. */
+    private void drawHud(Canvas c) {
+        String[] lines = hudLines;
+        if (lines.length == 0) return;
+        float size = 11f * density * hudScale;
+        float pad = size * 0.45f, lineH = size * 1.25f, margin = 4f * density;
+        hudText.setTextSize(size);
+        float boxW = 0f;
+        for (String l : lines) boxW = Math.max(boxW, hudText.measureText(l));
+        boxW += pad * 2f;
+        float boxH = lineH * lines.length + pad * 1.4f;
+        boolean right = (hudCorner & 1) != 0, bottom = (hudCorner & 2) != 0;
+        float x = right ? viewW - margin - boxW : margin;
+        float y = bottom ? viewH - margin - boxH : margin;
+        hudBack.setAlpha(hudAlpha * 150 / 255);
+        c.drawRect(x, y, x + boxW, y + boxH, hudBack);
+        hudText.setAlpha(hudAlpha);
+        for (int i = 0; i < lines.length; i++) {
+            c.drawText(lines[i], x + pad, y + pad * 0.4f + lineH * (i + 1) - size * 0.22f, hudText);
+        }
+    }
+
+    private void drawPill(Canvas c, RectF r, String label, int color) {
+        float rr = r.height() / 2f;
+        ctrlFill.setColor(color);
+        c.drawRoundRect(r, rr, rr, ctrlFill);
+        c.drawRoundRect(r, rr, rr, ctrlStroke);
+        c.drawText(label, r.centerX(), r.centerY() + textPaint.getTextSize() * 0.35f, textPaint);
     }
 
     private void drawEditor(Canvas c) {
         float txtOff = textPaint.getTextSize() * 0.35f;
         for (int i = 0; i < 2; i++) {
             RectF r = (i == 0) ? dstTop : dstBottom;
-            ctrlFill.setColor(Color.argb(i == editSel ? 70 : 25, 255, 255, 255));
+            ctrlFill.setColor(Color.argb(i == editLast ? 60 : 25, 255, 255, 255));
             c.drawRect(r.left, r.top, r.right, r.bottom, ctrlFill);
             float sw = ctrlStroke.getStrokeWidth() / 2f;
             c.drawRoundRect(r.left + sw, r.top + sw, r.right - sw, r.bottom - sw, 0f, 0f, ctrlStroke);
-            String label = (i == 0 ? "Tela de cima" : "Tela de baixo (toque)")
-                    + "  " + Math.round(r.width() / Native.SCREEN_W * 100f) + "%";
+            String label = (i == 0 ? "Cima" : "Baixo (toque)") + "  "
+                    + Math.round(r.width() / Native.SCREEN_W * 100f) + "% \u00d7 "
+                    + Math.round(r.height() / Native.SCREEN_H * 100f) + "%";
             c.drawText(label, r.centerX(), r.centerY() + txtOff, textPaint);
+            // Stretch handle in the bottom-right corner.
+            float hs = Math.min(unit * 0.55f, Math.min(r.width(), r.height()) * 0.25f);
+            ctrlFill.setColor(Color.argb(230, 255, 255, 255));
+            c.drawRect(r.right - hs, r.bottom - hs, r.right, r.bottom, ctrlFill);
         }
-        c.drawText("Arraste para mover \u2022 Pin\u00e7a com dois dedos para redimensionar",
-                viewW / 2f, editDone.top - textPaint.getTextSize() * 0.8f, textPaint);
-        ctrlFill.setColor(Color.argb(190, 30, 30, 30));
-        float rr = editDone.height() / 2f;
-        c.drawRoundRect(editReset, rr, rr, ctrlFill);
-        c.drawRoundRect(editReset, rr, rr, ctrlStroke);
-        c.drawText("Restaurar padr\u00e3o", editReset.centerX(), editReset.centerY() + txtOff, textPaint);
-        ctrlFill.setColor(Color.argb(210, 20, 110, 60));
-        c.drawRoundRect(editDone, rr, rr, ctrlFill);
-        c.drawRoundRect(editDone, rr, rr, ctrlStroke);
-        c.drawText("Concluir", editDone.centerX(), editDone.centerY() + txtOff, textPaint);
+        float ts = textPaint.getTextSize();
+        c.drawText("Arraste: mover \u2022 Pin\u00e7a: tamanho \u2022 Quadrado do canto: esticar",
+                viewW / 2f, editDone.top - ts * 0.8f, textPaint);
+        int dark = Color.argb(200, 30, 30, 30);
+        drawPill(c, editReset, "Padr\u00e3o", dark);
+        drawPill(c, editAspect, "4:3", dark);
+        drawPill(c, editFill, "Tela cheia", dark);
+        drawPill(c, editDone, "Concluir", Color.argb(220, 20, 110, 60));
     }
 
     private void drawControls(Canvas c) {
@@ -741,7 +882,12 @@ public class EmuView extends FrameLayout implements Runnable {
                 double secs = (now - fpsT0) / 1e9;
                 fpsText = String.format(Locale.US, "%.0f fps (%.0f desenhados)",
                         fpsFrames / secs, fpsDrawn / secs);
-                if (showFps) overlay.postInvalidate();
+                if (showFps) {
+                    hudLines = hudDetails
+                            ? perf.sample(fpsText, "3D: " + rendererLabel + " \u00b7 " + resScale + "x")
+                            : new String[]{fpsText};
+                    overlay.postInvalidate();
+                }
                 fpsT0 = now;
                 fpsFrames = 0;
                 fpsDrawn = 0;
