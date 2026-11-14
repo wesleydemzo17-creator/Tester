@@ -293,36 +293,80 @@ JNIFN(void, runFrame)(JNIEnv *, jclass, jint keys, jboolean touching, jint tx, j
 	SPU_Emulate_user();
 }
 
-// Copies both screens (256x384) as RGB565 into a direct ByteBuffer of at least 256*384*2 bytes.
-JNIFN(jboolean, copyFrame)(JNIEnv *env, jclass, jobject buffer)
+static inline u16 To565(const u16 c)
+{
+	// DS colour is xBGR1555 (red in the low bits). Convert to RGB565.
+	return (u16)(((c & 0x001F) << 11) | ((c & 0x03E0) << 1) | ((c >> 4) & 0x0020) | ((c >> 10) & 0x001F));
+}
+
+// Sets the internal rendering resolution (1 = native 256x192, up to 4x). Applied by the core on the next frame.
+JNIFN(void, setResolutionScale)(JNIEnv *, jclass, jint scale)
+{
+	if (!g_inited) return;
+	if (scale < 1) scale = 1;
+	if (scale > 4) scale = 4;
+	GPU->SetCustomFramebufferSize(GPU_FRAMEBUFFER_NATIVE_WIDTH * scale, GPU_FRAMEBUFFER_NATIVE_HEIGHT * scale);
+}
+
+// Copies both screens as RGB565 into a direct ByteBuffer: top screen first, then the touch screen,
+// each (256*scale) x (192*scale). If the core has not switched to that size yet, the native image
+// is enlarged so the caller always gets the size it asked for.
+JNIFN(jboolean, copyFrame)(JNIEnv *env, jclass, jobject buffer, jint scale)
 {
 	if (!g_inited) return JNI_FALSE;
+	if (scale < 1 || scale > 4) return JNI_FALSE;
 	u16 *dst = (u16 *)env->GetDirectBufferAddress(buffer);
 	jlong cap = env->GetDirectBufferCapacity(buffer);
-	const size_t pixPerScreen = GPU_FRAMEBUFFER_NATIVE_WIDTH * GPU_FRAMEBUFFER_NATIVE_HEIGHT;
+	const size_t NW = GPU_FRAMEBUFFER_NATIVE_WIDTH, NH = GPU_FRAMEBUFFER_NATIVE_HEIGHT;
+	const size_t W = NW * (size_t)scale, H = NH * (size_t)scale;
+	const size_t pixPerScreen = W * H;
 	if (dst == NULL || cap < (jlong)(pixPerScreen * 2 * sizeof(u16))) return JNI_FALSE;
 
 	const NDSDisplayInfo &info = GPU->GetDisplayInfo();
+	const bool customReady = (scale > 1) && info.isCustomSizeRequested && (info.pixelBytes == 2) &&
+	                         (info.customWidth == W) && (info.customHeight == H);
+
 	for (int s = 0; s < 2; s++)
 	{
 		const NDSDisplayID id = (s == 0) ? NDSDisplayID_Main : NDSDisplayID_Touch;
-		u16 *src = info.nativeBuffer16[id];
 		u16 *out = dst + pixPerScreen * s;
+		const float intensity = info.backlightIntensity[id];
+
+		if (customReady && info.customBuffer[id] != NULL)
+		{
+			u16 *src = (u16 *)info.customBuffer[id];
+			if (intensity < 0.999f)
+				ColorspaceApplyIntensityToBuffer16<false, false>(src, pixPerScreen, intensity);
+			for (size_t i = 0; i < pixPerScreen; i++) out[i] = To565(src[i]);
+			continue;
+		}
+
+		u16 *src = info.nativeBuffer16[id];
 		if (src == NULL)
 		{
 			memset(out, 0, pixPerScreen * sizeof(u16));
 			continue;
 		}
-		float intensity = info.backlightIntensity[id];
 		if (intensity < 0.999f)
-			ColorspaceApplyIntensityToBuffer16<false, false>(src, pixPerScreen, intensity);
+			ColorspaceApplyIntensityToBuffer16<false, false>(src, NW * NH, intensity);
 
-		// DS native is xBGR1555 (red in the low bits). Convert to RGB565.
-		// Simple loop on purpose: the compiler vectorises it with NEON.
-		for (size_t i = 0; i < pixPerScreen; i++)
+		if (scale == 1)
 		{
-			const u16 c = src[i];
-			out[i] = (u16)(((c & 0x001F) << 11) | ((c & 0x03E0) << 1) | ((c >> 4) & 0x0020) | ((c >> 10) & 0x001F));
+			// Simple loop on purpose: the compiler vectorises it with NEON.
+			for (size_t i = 0; i < pixPerScreen; i++) out[i] = To565(src[i]);
+		}
+		else
+		{
+			for (size_t y = 0; y < NH; y++)
+			{
+				u16 *row = out + y * (size_t)scale * W;
+				for (size_t x = 0; x < NW; x++)
+				{
+					const u16 c = To565(src[y * NW + x]);
+					for (int k = 0; k < scale; k++) row[x * (size_t)scale + k] = c;
+				}
+				for (int k = 1; k < scale; k++) memcpy(row + (size_t)k * W, row, W * sizeof(u16));
+			}
 		}
 	}
 	return JNI_TRUE;

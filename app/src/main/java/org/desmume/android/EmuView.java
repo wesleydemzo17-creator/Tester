@@ -1,30 +1,28 @@
 package org.desmume.android;
 
 import android.content.Context;
-import android.graphics.Bitmap;
+import android.content.SharedPreferences;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
-import android.graphics.Rect;
 import android.graphics.RectF;
 import android.media.AudioAttributes;
 import android.media.AudioFormat;
 import android.media.AudioTrack;
+import android.opengl.GLSurfaceView;
 import android.view.MotionEvent;
-import android.view.Surface;
-import android.view.SurfaceHolder;
-import android.view.SurfaceView;
+import android.view.View;
+import android.widget.FrameLayout;
 
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.util.ArrayList;
+import java.util.Locale;
 import java.util.concurrent.locks.LockSupport;
 
 /**
- * Draws both DS screens plus the on-screen controls, and owns the emulation thread.
- * One thread runs the core, uploads the frame and feeds audio, so no extra copies or locks are needed.
+ * The emulator screen: an OpenGL surface that draws the two DS screens (see ScreenRenderer), a
+ * transparent overlay with the on-screen controls and the layout editor, and the emulation thread.
  */
-public class EmuView extends SurfaceView implements SurfaceHolder.Callback, Runnable {
+public class EmuView extends FrameLayout implements Runnable {
 
     public interface Listener {
         void onMenuRequested();
@@ -32,6 +30,15 @@ public class EmuView extends SurfaceView implements SurfaceHolder.Callback, Runn
     }
 
     public static final int FRAMESKIP_AUTO = -1;
+
+    public static final int LAYOUT_CUSTOM = 99;
+    public static final String[] LAYOUT_NAMES = {
+            "Padrão (uma sobre a outra)",
+            "Lado a lado",
+            "Tela de cima grande",
+            "Tela de baixo grande",
+    };
+    private static final float ASPECT = (float) Native.SCREEN_H / Native.SCREEN_W; // height / width
     private static final long FRAME_NS = 16_715_000L; // 59.8261 Hz
 
     private static final class Btn {
@@ -43,29 +50,41 @@ public class EmuView extends SurfaceView implements SurfaceHolder.Callback, Runn
     }
 
     private final Listener listener;
-    private final Bitmap bitmap = Bitmap.createBitmap(Native.SCREEN_W, Native.SCREEN_H * 2, Bitmap.Config.RGB_565);
-    private final ByteBuffer pixels =
-            ByteBuffer.allocateDirect(Native.SCREEN_W * Native.SCREEN_H * 2 * 2).order(ByteOrder.nativeOrder());
+    private final SharedPreferences prefs;
+    private final GLSurfaceView glView;
+    private final ScreenRenderer renderer = new ScreenRenderer();
+    private final Overlay overlay;
     private final short[] audioBuf = new short[Native.SAMPLE_RATE / 2];
 
-    private final Rect srcTop = new Rect(0, 0, Native.SCREEN_W, Native.SCREEN_H);
-    private final Rect srcBottom = new Rect(0, Native.SCREEN_H, Native.SCREEN_W, Native.SCREEN_H * 2);
+    /** Where the screens are drawn, in view pixels. Only touched on the UI thread. */
     private final RectF dstTop = new RectF();
     private final RectF dstBottom = new RectF();
+    /** The default (stacked) placement; the controls are arranged around it. */
+    private final RectF defTop = new RectF();
+    private final RectF defBottom = new RectF();
+    private int viewW, viewH;
+    private float unit = 1f;
+
+    // Layout editor state (UI thread).
+    private boolean editMode;
+    private int editSel = -1;
+    private boolean pinching;
+    private float lastX, lastY, pinchStartDist, pinchStartW;
+    private final RectF editDone = new RectF();
+    private final RectF editReset = new RectF();
     private final RectF dpad = new RectF();
     private final RectF menuBtn = new RectF();
     private final ArrayList<Btn> buttons = new ArrayList<>();
 
-    private final Paint screenPaint = new Paint();
     private final Paint ctrlFill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint ctrlStroke = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
     private Thread thread;
     private volatile boolean running;
-    private volatile boolean surfaceReady;
     private volatile boolean paused = true;
-    private volatile boolean layoutDirty = true;
+    private volatile boolean noRom = true;
+    private volatile int resScale = 1;
 
     // Input state (written by the UI thread, read by the emulation thread).
     private volatile int touchKeys;
@@ -85,10 +104,20 @@ public class EmuView extends SurfaceView implements SurfaceHolder.Callback, Runn
     private int totalFrames;
     private volatile String fpsText = "";
 
-    public EmuView(Context context, Listener listener) {
+    public EmuView(Context context, Listener listener, SharedPreferences prefs) {
         super(context);
         this.listener = listener;
-        getHolder().addCallback(this);
+        this.prefs = prefs;
+
+        glView = new GLSurfaceView(context);
+        glView.setEGLContextClientVersion(2);
+        glView.setPreserveEGLContextOnPause(true);
+        glView.setRenderer(renderer);
+        glView.setRenderMode(GLSurfaceView.RENDERMODE_WHEN_DIRTY);
+        addView(glView);
+        overlay = new Overlay(context);
+        addView(overlay);
+
         setFocusable(true);
         setFocusableInTouchMode(true);
         ctrlFill.setStyle(Paint.Style.FILL);
@@ -111,11 +140,21 @@ public class EmuView extends SurfaceView implements SurfaceHolder.Callback, Runn
     public void setSoundEnabled(boolean v) { soundEnabled = v; Native.setSoundEnabled(v); }
     public void setFastForward(boolean v) { fastForward = v; }
     public boolean isFastForward() { return fastForward; }
-    public void setSmoothing(boolean v) { screenPaint.setFilterBitmap(v); }
-    public void setShowFps(boolean v) { showFps = v; }
-    public void setShowControls(boolean v) { showControls = v; }
+    public void setShader(int index) { renderer.setShader(index); glView.requestRender(); }
+    public void setShowFps(boolean v) { showFps = v; overlay.invalidate(); }
+    public void setShowControls(boolean v) { showControls = v; overlay.invalidate(); }
     public void setPaused(boolean v) { paused = v; }
-    public void setPadKeys(int keys) { padKeys = keys; }
+    public void setPadKeys(int keys) { padKeys = keys; overlay.invalidate(); }
+
+    /** Internal rendering resolution: 1 (native) to 4. */
+    public void setResolutionScale(int scale) {
+        scale = Math.max(1, Math.min(4, scale));
+        Native.setResolutionScale(scale);
+        resScale = scale;
+    }
+
+    public void onHostResume() { glView.onResume(); }
+    public void onHostPause() { glView.onPause(); }
     public int getPadKeys() { return padKeys; }
 
     // ------------------------------------------------------------------ lifecycle
@@ -136,26 +175,153 @@ public class EmuView extends SurfaceView implements SurfaceHolder.Callback, Runn
         }
     }
 
-    @Override public void surfaceCreated(SurfaceHolder holder) { surfaceReady = true; }
+    // ------------------------------------------------------------------ layout
+    private boolean portrait() { return viewH >= viewW; }
+    private String presetKey() { return portrait() ? "layout_preset_p" : "layout_preset_l"; }
+    private String customKey() { return portrait() ? "layout_custom_p" : "layout_custom_l"; }
 
-    @Override public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
-        layoutDirty = true;
-        surfaceReady = true;
+    private static void place(RectF r, float left, float top, float width) {
+        r.set(left, top, left + width, top + width * ASPECT);
     }
 
-    @Override public void surfaceDestroyed(SurfaceHolder holder) { surfaceReady = false; }
+    /** Recomputes everything for the current view size and saved layout choice. */
+    private void relayout() {
+        if (viewW <= 0 || viewH <= 0) return;
+        layoutControls(viewW, viewH);
+        int preset = prefs.getInt(presetKey(), 0);
+        if (preset == LAYOUT_CUSTOM && !loadCustom()) preset = 0;
+        if (preset != LAYOUT_CUSTOM) applyPreset(preset);
+        pushRects();
+    }
 
-    // ------------------------------------------------------------------ layout
-    private void layout(int w, int h) {
+    private void applyPreset(int preset) {
+        final float w = viewW, h = viewH;
+        if (preset < 1 || preset > 3) {
+            dstTop.set(defTop);
+            dstBottom.set(defBottom);
+            return;
+        }
+        if (portrait()) {
+            if (preset == 1) {
+                place(dstTop, 0, 0, w / 2f);
+                place(dstBottom, w / 2f, 0, w / 2f);
+            } else if (preset == 2) {
+                place(dstTop, 0, 0, w);
+                place(dstBottom, w / 4f, w * ASPECT, w / 2f);
+            } else {
+                place(dstTop, w / 4f, 0, w / 2f);
+                place(dstBottom, 0, w / 2f * ASPECT, w);
+            }
+        } else {
+            if (preset == 1) {
+                float a = Math.min(w / 2f, h / ASPECT);
+                place(dstTop, 0, 0, a);
+                place(dstBottom, a, 0, a);
+            } else {
+                float big = Math.min(h / ASPECT, w * 0.66f);
+                float small = Math.min(w - big, big);
+                float dy = (big - small) * ASPECT / 2f;
+                if (preset == 2) {
+                    place(dstTop, 0, 0, big);
+                    place(dstBottom, big, dy, small);
+                } else {
+                    place(dstTop, 0, dy, small);
+                    place(dstBottom, small, 0, big);
+                }
+            }
+        }
+        // Shrink to fit if needed, then centre (portrait keeps the screens at the top).
+        float uw = Math.max(dstTop.right, dstBottom.right);
+        float uh = Math.max(dstTop.bottom, dstBottom.bottom);
+        float k = Math.min(1f, Math.min(w / uw, h / uh));
+        float ox = (w - uw * k) / 2f;
+        float oy = portrait() ? 0f : (h - uh * k) / 2f;
+        place(dstTop, dstTop.left * k + ox, dstTop.top * k + oy, dstTop.width() * k);
+        place(dstBottom, dstBottom.left * k + ox, dstBottom.top * k + oy, dstBottom.width() * k);
+    }
+
+    private boolean loadCustom() {
+        String v = prefs.getString(customKey(), null);
+        if (v == null) return false;
+        String[] p = v.split(",");
+        if (p.length != 6) return false;
+        try {
+            float[] f = new float[6];
+            for (int i = 0; i < 6; i++) f[i] = Float.parseFloat(p[i]);
+            place(dstTop, f[0] * viewW, f[1] * viewH, f[2] * viewW);
+            place(dstBottom, f[3] * viewW, f[4] * viewH, f[5] * viewW);
+            clampRect(dstTop);
+            clampRect(dstBottom);
+            return true;
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    }
+
+    private void saveCustom() {
+        String v = String.format(Locale.US, "%.5f,%.5f,%.5f,%.5f,%.5f,%.5f",
+                dstTop.left / viewW, dstTop.top / viewH, dstTop.width() / viewW,
+                dstBottom.left / viewW, dstBottom.top / viewH, dstBottom.width() / viewW);
+        prefs.edit().putString(customKey(), v).putInt(presetKey(), LAYOUT_CUSTOM).apply();
+    }
+
+    /** Keeps a screen inside the view and within the allowed size range. */
+    private void clampRect(RectF r) {
+        float maxW = Math.min(viewW, viewH / ASPECT);
+        float minW = Math.min(maxW, Math.min(viewW, viewH) * 0.2f);
+        float rw = Math.max(minW, Math.min(maxW, r.width()));
+        float rh = rw * ASPECT;
+        float cx = r.centerX(), cy = r.centerY();
+        float left = Math.max(0f, Math.min(viewW - rw, cx - rw / 2f));
+        float top = Math.max(0f, Math.min(viewH - rh, cy - rh / 2f));
+        r.set(left, top, left + rw, top + rh);
+    }
+
+    private void pushRects() {
+        renderer.setRects(new float[]{
+                dstTop.left, dstTop.top, dstTop.width(), dstTop.height(),
+                dstBottom.left, dstBottom.top, dstBottom.width(), dstBottom.height()});
+        glView.requestRender();
+        overlay.invalidate();
+    }
+
+    /** Picks one of the built-in arrangements for the current orientation. */
+    public void setLayoutPreset(int preset) {
+        prefs.edit().putInt(presetKey(), preset).apply();
+        relayout();
+    }
+
+    public int getLayoutPreset() { return prefs.getInt(presetKey(), 0); }
+
+    /** Enters the editor: drag a screen to move it, pinch to resize it. */
+    public void startLayoutEdit() {
+        editMode = true;
+        editSel = -1;
+        pinching = false;
+        touchKeys = 0;
+        stylusDown = false;
+        stylusPointerId = -1;
+        overlay.invalidate();
+    }
+
+    public boolean isEditingLayout() { return editMode; }
+
+    public void finishLayoutEdit() {
+        if (!editMode) return;
+        editMode = false;
+        saveCustom();
+        overlay.invalidate();
+    }
+
+    private void layoutControls(int w, int h) {
         final float sw = Native.SCREEN_W, sh = Native.SCREEN_H;
-        float unit; // base size for buttons
         if (h >= w) {
             // Portrait: screens stacked at the top, controls underneath.
             float scale = Math.min(w / sw, (h * 0.62f) / (sh * 2));
             float left = (w - sw * scale) / 2f;
-            dstTop.set(left, 0, left + sw * scale, sh * scale);
-            dstBottom.set(left, sh * scale, left + sw * scale, sh * scale * 2);
-            float top = dstBottom.bottom;
+            defTop.set(left, 0, left + sw * scale, sh * scale);
+            defBottom.set(left, sh * scale, left + sw * scale, sh * scale * 2);
+            float top = defBottom.bottom;
             float areaH = h - top;
             unit = Math.min(w / 8f, areaH / 5.2f);
             float cy = top + unit * 0.9f + (areaH - unit * 0.9f) * 0.45f;
@@ -165,8 +331,8 @@ public class EmuView extends SurfaceView implements SurfaceHolder.Callback, Runn
             float scale = Math.min(h / (sh * 2), (w * 0.5f) / sw);
             float left = (w - sw * scale) / 2f;
             float topY = (h - sh * scale * 2) / 2f;
-            dstTop.set(left, topY, left + sw * scale, topY + sh * scale);
-            dstBottom.set(left, dstTop.bottom, left + sw * scale, dstTop.bottom + sh * scale);
+            defTop.set(left, topY, left + sw * scale, topY + sh * scale);
+            defBottom.set(left, defTop.bottom, left + sw * scale, defTop.bottom + sh * scale);
             float side = left;
             unit = Math.min(side / 4.2f, h / 6.5f);
             placeControls(0, w, 0, h * 0.58f, unit, -1, -1);
@@ -177,6 +343,10 @@ public class EmuView extends SurfaceView implements SurfaceHolder.Callback, Runn
             find(Native.KEY_START).r.set(rc - bw / 2f, h - bh * 1.5f, rc + bw / 2f, h - bh * 0.5f);
             menuBtn.set(rc - bw / 2f, bh * 2.2f, rc + bw / 2f, bh * 3.2f);
         }
+        // Layout editor buttons, bottom centre.
+        float ew = unit * 3.4f, eh = unit * 0.8f, eg = unit * 0.2f, ey = h - eh * 1.4f;
+        editReset.set(w / 2f - ew - eg, ey, w / 2f - eg, ey + eh);
+        editDone.set(w / 2f + eg, ey, w / 2f + eg + ew, ey + eh);
         textPaint.setTextSize(unit * 0.42f);
         ctrlStroke.setStrokeWidth(Math.max(2f, unit * 0.04f));
     }
@@ -216,8 +386,83 @@ public class EmuView extends SurfaceView implements SurfaceHolder.Callback, Runn
     }
 
     // ------------------------------------------------------------------ input
-    @Override
-    public boolean onTouchEvent(MotionEvent e) {
+    private boolean editTouch(MotionEvent e) {
+        int action = e.getActionMasked();
+        switch (action) {
+            case MotionEvent.ACTION_DOWN: {
+                float x = e.getX(0), y = e.getY(0);
+                if (editDone.contains(x, y)) {
+                    finishLayoutEdit();
+                    return true;
+                }
+                if (editReset.contains(x, y)) {
+                    applyPreset(0);
+                    pushRects();
+                    return true;
+                }
+                editSel = dstBottom.contains(x, y) ? 1 : (dstTop.contains(x, y) ? 0 : -1);
+                pinching = false;
+                lastX = x;
+                lastY = y;
+                break;
+            }
+            case MotionEvent.ACTION_POINTER_DOWN: {
+                if (e.getPointerCount() >= 2) {
+                    if (editSel < 0) {
+                        float x = e.getX(1), y = e.getY(1);
+                        editSel = dstBottom.contains(x, y) ? 1 : (dstTop.contains(x, y) ? 0 : -1);
+                    }
+                    if (editSel >= 0) {
+                        pinchStartDist = Math.max(1f, (float) Math.hypot(e.getX(0) - e.getX(1), e.getY(0) - e.getY(1)));
+                        pinchStartW = (editSel == 0 ? dstTop : dstBottom).width();
+                        pinching = true;
+                    }
+                }
+                break;
+            }
+            case MotionEvent.ACTION_MOVE: {
+                if (editSel < 0) break;
+                RectF r = (editSel == 0) ? dstTop : dstBottom;
+                if (pinching && e.getPointerCount() >= 2) {
+                    float d = (float) Math.hypot(e.getX(0) - e.getX(1), e.getY(0) - e.getY(1));
+                    float nw = pinchStartW * d / pinchStartDist;
+                    float cx = r.centerX(), cy = r.centerY();
+                    r.set(cx - nw / 2f, cy - nw * ASPECT / 2f, cx + nw / 2f, cy + nw * ASPECT / 2f);
+                } else if (!pinching) {
+                    float x = e.getX(0), y = e.getY(0);
+                    r.offset(x - lastX, y - lastY);
+                    lastX = x;
+                    lastY = y;
+                }
+                clampRect(r);
+                pushRects();
+                break;
+            }
+            case MotionEvent.ACTION_POINTER_UP: {
+                pinching = false;
+                // Continue dragging with whichever finger stays down, without a jump.
+                int keep = (e.getActionIndex() == 0) ? 1 : 0;
+                if (keep < e.getPointerCount()) {
+                    lastX = e.getX(keep);
+                    lastY = e.getY(keep);
+                }
+                if (e.getPointerCount() > 2) editSel = -1;
+                break;
+            }
+            default:
+                if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                    editSel = -1;
+                    pinching = false;
+                    overlay.invalidate();
+                }
+                break;
+        }
+        overlay.invalidate();
+        return true;
+    }
+
+    private boolean handleTouch(MotionEvent e) {
+        if (editMode) return editTouch(e);
         int action = e.getActionMasked();
         int idx = e.getActionIndex();
 
@@ -227,7 +472,10 @@ public class EmuView extends SurfaceView implements SurfaceHolder.Callback, Runn
                 listener.onMenuRequested();
                 return true;
             }
-            if (stylusPointerId < 0 && dstBottom.contains(x, y)) stylusPointerId = e.getPointerId(idx);
+            // A button drawn over the touch screen wins over the stylus.
+            if (stylusPointerId < 0 && dstBottom.contains(x, y) && !onControl(x, y)) {
+                stylusPointerId = e.getPointerId(idx);
+            }
         }
 
         boolean ended = action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL;
@@ -254,8 +502,20 @@ public class EmuView extends SurfaceView implements SurfaceHolder.Callback, Runn
             }
         }
         stylusDown = stylus;
-        touchKeys = keys;
+        if (keys != touchKeys) {
+            touchKeys = keys;
+            overlay.invalidate();
+        }
         return true;
+    }
+
+    private boolean onControl(float x, float y) {
+        if (!showControls) return false;
+        if (dpad.contains(x, y)) return true;
+        for (Btn b : buttons) {
+            if (b.r.contains(x, y)) return true;
+        }
+        return false;
     }
 
     private int keysAt(float x, float y) {
@@ -281,42 +541,66 @@ public class EmuView extends SurfaceView implements SurfaceHolder.Callback, Runn
         return 0;
     }
 
-    // ------------------------------------------------------------------ drawing
-    private void draw(boolean haveFrame) {
-        if (!surfaceReady) return;
-        SurfaceHolder holder = getHolder();
-        Surface surface = holder.getSurface();
-        if (surface == null || !surface.isValid()) return;
-        Canvas c = null;
-        try {
-            c = surface.lockHardwareCanvas(); // GPU scaling: far cheaper than a software canvas
-            if (c == null) return;
-            if (layoutDirty) {
-                layout(c.getWidth(), c.getHeight());
-                layoutDirty = false;
+    // ------------------------------------------------------------------ overlay drawing
+    /** Transparent view on top of the GL surface: controls, FPS text and the layout editor. */
+    private final class Overlay extends View {
+        Overlay(Context context) { super(context); }
+
+        @Override
+        protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+            super.onSizeChanged(w, h, oldw, oldh);
+            viewW = w;
+            viewH = h;
+            relayout();
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent e) { return handleTouch(e); }
+
+        @Override
+        protected void onDraw(Canvas c) {
+            if (viewW <= 0) return;
+            if (editMode) {
+                drawEditor(c);
+                return;
             }
-            c.drawColor(Color.BLACK);
-            if (haveFrame) {
-                c.drawBitmap(bitmap, srcTop, dstTop, screenPaint);
-                c.drawBitmap(bitmap, srcBottom, dstBottom, screenPaint);
-            } else {
+            if (noRom) {
                 float ts = textPaint.getTextSize();
                 c.drawText("DeSmuME", dstTop.centerX(), dstTop.centerY(), textPaint);
-                c.drawText("MENU → Abrir ROM", dstBottom.centerX(), dstBottom.centerY() + ts, textPaint);
+                c.drawText("MENU \u2192 Abrir ROM", dstBottom.centerX(), dstBottom.centerY() + ts, textPaint);
             }
             drawControls(c);
-            if (showFps && haveFrame) {
+            if (showFps && !noRom) {
                 textPaint.setTextAlign(Paint.Align.LEFT);
                 c.drawText(fpsText, dstTop.left + 8, dstTop.top + textPaint.getTextSize() + 4, textPaint);
                 textPaint.setTextAlign(Paint.Align.CENTER);
             }
-        } catch (RuntimeException ignored) {
-            // Surface went away between the validity check and the lock.
-        } finally {
-            if (c != null) {
-                try { surface.unlockCanvasAndPost(c); } catch (RuntimeException ignored) { }
-            }
         }
+    }
+
+    private void drawEditor(Canvas c) {
+        float txtOff = textPaint.getTextSize() * 0.35f;
+        for (int i = 0; i < 2; i++) {
+            RectF r = (i == 0) ? dstTop : dstBottom;
+            ctrlFill.setColor(Color.argb(i == editSel ? 70 : 25, 255, 255, 255));
+            c.drawRect(r.left, r.top, r.right, r.bottom, ctrlFill);
+            float sw = ctrlStroke.getStrokeWidth() / 2f;
+            c.drawRoundRect(r.left + sw, r.top + sw, r.right - sw, r.bottom - sw, 0f, 0f, ctrlStroke);
+            String label = (i == 0 ? "Tela de cima" : "Tela de baixo (toque)")
+                    + "  " + Math.round(r.width() / Native.SCREEN_W * 100f) + "%";
+            c.drawText(label, r.centerX(), r.centerY() + txtOff, textPaint);
+        }
+        c.drawText("Arraste para mover \u2022 Pin\u00e7a com dois dedos para redimensionar",
+                viewW / 2f, editDone.top - textPaint.getTextSize() * 0.8f, textPaint);
+        ctrlFill.setColor(Color.argb(190, 30, 30, 30));
+        float rr = editDone.height() / 2f;
+        c.drawRoundRect(editReset, rr, rr, ctrlFill);
+        c.drawRoundRect(editReset, rr, rr, ctrlStroke);
+        c.drawText("Restaurar padr\u00e3o", editReset.centerX(), editReset.centerY() + txtOff, textPaint);
+        ctrlFill.setColor(Color.argb(210, 20, 110, 60));
+        c.drawRoundRect(editDone, rr, rr, ctrlFill);
+        c.drawRoundRect(editDone, rr, rr, ctrlStroke);
+        c.drawText("Concluir", editDone.centerX(), editDone.centerY() + txtOff, textPaint);
     }
 
     private void drawControls(Canvas c) {
@@ -396,14 +680,20 @@ public class EmuView extends SurfaceView implements SurfaceHolder.Callback, Runn
         long next = System.nanoTime();
         int skipped = 0;
         boolean skipNext = false;
-        boolean haveFrame = false;
+        int idleTicks = 0;
         long fpsT0 = System.nanoTime();
         int fpsFrames = 0, fpsDrawn = 0;
 
         while (running) {
-            if (paused || !surfaceReady || !Native.romLoaded()) {
-                if (!Native.romLoaded()) haveFrame = false;
-                draw(haveFrame);
+            boolean loaded = Native.romLoaded();
+            if (loaded == noRom) {
+                noRom = !loaded;
+                if (!loaded) renderer.clearFrame();
+                glView.requestRender();
+                overlay.postInvalidate();
+            }
+            if (paused || !loaded) {
+                if ((++idleTicks & 15) == 0) glView.requestRender();
                 try { Thread.sleep(60); } catch (InterruptedException ignored) { }
                 next = System.nanoTime();
                 continue;
@@ -415,13 +705,7 @@ public class EmuView extends SurfaceView implements SurfaceHolder.Callback, Runn
             if ((totalFrames & 63) == 0) listener.onFramesRun(totalFrames);
 
             if (!skipNext) {
-                pixels.rewind();
-                if (Native.copyFrame(pixels)) {
-                    pixels.rewind();
-                    bitmap.copyPixelsFromBuffer(pixels);
-                    haveFrame = true;
-                }
-                draw(haveFrame);
+                if (renderer.fetchFrame(resScale)) glView.requestRender();
                 fpsDrawn++;
             }
 
@@ -455,8 +739,9 @@ public class EmuView extends SurfaceView implements SurfaceHolder.Callback, Runn
 
             if (now - fpsT0 >= 1_000_000_000L) {
                 double secs = (now - fpsT0) / 1e9;
-                fpsText = String.format(java.util.Locale.US, "%.0f fps (%.0f desenhados)",
+                fpsText = String.format(Locale.US, "%.0f fps (%.0f desenhados)",
                         fpsFrames / secs, fpsDrawn / secs);
+                if (showFps) overlay.postInvalidate();
                 fpsT0 = now;
                 fpsFrames = 0;
                 fpsDrawn = 0;

@@ -35,8 +35,11 @@ O APK sai em `app/build/outputs/apk/release/`. Ele é assinado com a chave de de
 | Proteção do JIT | Se o app fechar sozinho logo após carregar um jogo com JIT, na próxima abertura o JIT é desligado automaticamente. |
 | NEON | Os caminhos NEON do GPU 2D e da conversão de cores do núcleo são ativados em arm64. |
 | 3D em threads | SoftRasterizer com até 4 threads. |
+| Resolução interna | 1x a 4x (até 1024×768 por tela) para os gráficos 3D, pelo SoftRasterizer. Pesa bastante na CPU. |
+| Shaders | Telas desenhadas com OpenGL ES 2.0: nítido, bilinear, sharp bilinear, grade LCD, scanlines e cores do DS. |
+| Layout livre | Predefinições (empilhado, lado a lado, uma tela grande) e editor: arrastar para mover, pinça para redimensionar. Salvo por orientação. |
 | Frameskip | Automático (pula até 3 quadros quando atrasa) ou fixo de 0 a 4. |
-| Vídeo | Quadro em RGB565 direto do buffer nativo, escalado pela GPU (`lockHardwareCanvas`). |
+| Vídeo | Quadro em RGB565 enviado como textura e escalado pela GPU. |
 | Áudio | Mixagem assíncrona, uma fatia por quadro, direto para `AudioTrack`. |
 | Compilação | `-O3`, somente `arm64-v8a`, páginas de 16 KB suportadas. |
 | Avanço rápido | No menu, com o jogo aberto. |
@@ -44,7 +47,8 @@ O APK sai em `app/build/outputs/apk/release/`. Ele é assinado com a chave de de
 ## Limitações conhecidas
 
 - Somente aparelhos ARM de 64 bits, Android 8.0+.
-- 3D apenas por software (sem OpenGL ES ainda) e em resolução nativa.
+- 3D renderizado por software (o OpenGL ES é usado só para exibir as telas e aplicar shaders).
+- As telas mantêm a proporção 4:3 ao redimensionar.
 - Sem microfone, Wi-Fi, cheats e filtros de imagem.
 - Sem BIOS/firmware externos (usa a emulação HLE do núcleo).
 
@@ -54,7 +58,8 @@ O APK sai em `app/build/outputs/apk/release/`. Ele é assinado com a chave de de
 app/src/main/cpp/CMakeLists.txt   build do núcleo + ponte (também compila em Linux para testes)
 app/src/main/cpp/bridge.cpp       ponte JNI: vídeo, áudio, entrada, saves
 app/src/main/cpp/shim/            substitutos mínimos de glib e libpcap
-app/src/main/java/...             Native, EmuView (telas, controles, loop), MainActivity (menu)
+app/src/main/java/...             Native, EmuView (controles, layout, loop), ScreenRenderer + Shaders (OpenGL), MainActivity (menu)
+tools/DumpShaders.java            usado no build para validar os shaders com glslangValidator
 .github/workflows/build.yml       gera o APK no GitHub Actions
 ```
 

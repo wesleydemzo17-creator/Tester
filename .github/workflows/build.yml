@@ -27,6 +27,15 @@ jobs:
       - name: Fetch DeSmuME source (pinned commit)
         run: ./scripts/fetch_desmume.sh
 
+      - name: Validate shaders
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq glslang-tools
+          mkdir -p /tmp/shaders
+          javac -d /tmp/shaders app/src/main/java/org/desmume/android/Shaders.java tools/DumpShaders.java
+          java -cp /tmp/shaders org.desmume.android.DumpShaders /tmp/shaders/out
+          for f in /tmp/shaders/out/*; do glslangValidator "$f"; done
+
       - name: Build APK
         run: gradle --no-daemon :app:assembleRelease
 

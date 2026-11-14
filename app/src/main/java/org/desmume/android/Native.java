@@ -28,7 +28,8 @@ public final class Native {
     public static synchronized native void reset();
     public static synchronized native boolean romLoaded();
     public static synchronized native void runFrame(int keys, boolean touching, int tx, int ty, boolean skipVideo);
-    public static synchronized native boolean copyFrame(ByteBuffer rgb565);
+    public static synchronized native void setResolutionScale(int scale);
+    public static synchronized native boolean copyFrame(ByteBuffer rgb565, int scale);
     public static synchronized native int readAudio(short[] out);
     public static synchronized native boolean saveState(String path);
     public static synchronized native boolean loadState(String path);

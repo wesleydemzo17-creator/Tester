@@ -48,7 +48,7 @@ public class MainActivity extends Activity implements EmuView.Listener {
         new File(baseDir, "roms").mkdirs();
         new File(baseDir, "states").mkdirs();
 
-        view = new EmuView(this, this);
+        view = new EmuView(this, this, prefs);
         setContentView(view);
         applyImmersive();
 
@@ -72,6 +72,7 @@ public class MainActivity extends Activity implements EmuView.Listener {
     protected void onResume() {
         super.onResume();
         applyImmersive();
+        view.onHostResume();
         resumed = true;
         updatePaused();
     }
@@ -80,6 +81,7 @@ public class MainActivity extends Activity implements EmuView.Listener {
     protected void onPause() {
         resumed = false;
         updatePaused();
+        view.onHostPause();
         if (coreReady) Native.flushSaves();
         // A clean pause means the JIT did not crash the process.
         if (jitGuardArmed) {
@@ -129,7 +131,9 @@ public class MainActivity extends Activity implements EmuView.Listener {
         Native.setJit(jit, JIT_BLOCK_SIZE);
         Native.setAdvancedTiming(prefs.getBoolean("advanced_timing", true));
         view.setSoundEnabled(prefs.getBoolean("sound", true));
-        view.setSmoothing(prefs.getBoolean("smooth", false));
+        // "smooth" is the old on/off option; it maps to the bilinear shader.
+        view.setShader(prefs.getInt("shader", prefs.getBoolean("smooth", false) ? 1 : 0));
+        view.setResolutionScale(prefs.getInt("res_scale", 1));
         view.setShowFps(prefs.getBoolean("show_fps", true));
         view.setShowControls(prefs.getBoolean("show_controls", true));
         view.setFrameskip(prefs.getInt("frameskip", EmuView.FRAMESKIP_AUTO));
@@ -174,6 +178,12 @@ public class MainActivity extends Activity implements EmuView.Listener {
             labels.add("Reiniciar jogo");
             actions.add(() -> { applySettings(); armJitGuard(); Native.reset(); });
         }
+        labels.add("Resolução interna: " + prefs.getInt("res_scale", 1) + "x");
+        actions.add(this::showResolution);
+        labels.add("Shader");
+        actions.add(this::showShaders);
+        labels.add("Layout das telas");
+        actions.add(this::showLayouts);
         labels.add("Configurações");
         actions.add(this::showSettings);
         labels.add("Frameskip");
@@ -187,13 +197,12 @@ public class MainActivity extends Activity implements EmuView.Listener {
     }
 
     private void showSettings() {
-        final String[] keys = {"jit", "sound", "advanced_timing", "smooth", "show_fps", "show_controls"};
-        final boolean[] defaults = {true, true, true, false, true, true};
+        final String[] keys = {"jit", "sound", "advanced_timing", "show_fps", "show_controls"};
+        final boolean[] defaults = {true, true, true, true, true};
         final String[] labels = {
                 Native.jitAvailable() ? "JIT (recompilador dinâmico) — mais rápido" : "JIT (indisponível neste aparelho)",
                 "Som",
                 "Timing avançado (mais compatível, mais lento)",
-                "Suavizar imagem",
                 "Mostrar FPS",
                 "Mostrar controles na tela"};
         final boolean[] values = new boolean[keys.length];
@@ -213,6 +222,52 @@ public class MainActivity extends Activity implements EmuView.Listener {
                     }
                 })
                 .setNegativeButton("Cancelar", null));
+    }
+
+    private void showResolution() {
+        final String[] labels = {
+                "1x — 256×192 (nativa, mais rápida)",
+                "2x — 512×384",
+                "3x — 768×576",
+                "4x — 1024×768 (bem pesada)"};
+        int cur = Math.max(1, Math.min(4, prefs.getInt("res_scale", 1)));
+        dialog(new AlertDialog.Builder(this)
+                .setTitle("Resolução interna (só melhora gráficos 3D)")
+                .setSingleChoiceItems(labels, cur - 1, (d, which) -> {
+                    prefs.edit().putInt("res_scale", which + 1).apply();
+                    view.setResolutionScale(which + 1);
+                    d.dismiss();
+                    if (which > 0) toast("Resoluções maiores deixam a emulação mais lenta. Confira o FPS.");
+                }));
+    }
+
+    private void showShaders() {
+        int cur = prefs.getInt("shader", prefs.getBoolean("smooth", false) ? 1 : 0);
+        dialog(new AlertDialog.Builder(this)
+                .setTitle("Shader")
+                .setSingleChoiceItems(Shaders.NAMES, cur, (d, which) -> {
+                    prefs.edit().putInt("shader", which).apply();
+                    view.setShader(which);
+                    d.dismiss();
+                }));
+    }
+
+    private void showLayouts() {
+        final int n = EmuView.LAYOUT_NAMES.length;
+        final String[] labels = new String[n + 1];
+        System.arraycopy(EmuView.LAYOUT_NAMES, 0, labels, 0, n);
+        labels[n] = "Personalizado: mover e redimensionar…";
+        int cur = view.getLayoutPreset();
+        dialog(new AlertDialog.Builder(this)
+                .setTitle("Layout das telas (vale para a orientação atual)")
+                .setSingleChoiceItems(labels, cur == EmuView.LAYOUT_CUSTOM ? n : cur, (d, which) -> {
+                    d.dismiss();
+                    if (which < n) {
+                        view.setLayoutPreset(which);
+                    } else {
+                        view.startLayoutEdit();
+                    }
+                }));
     }
 
     private void showFrameskip() {
@@ -383,7 +438,10 @@ public class MainActivity extends Activity implements EmuView.Listener {
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
         if (event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
-            if (event.getAction() == KeyEvent.ACTION_UP) showMenu();
+            if (event.getAction() == KeyEvent.ACTION_UP) {
+                if (view.isEditingLayout()) view.finishLayoutEdit();
+                else showMenu();
+            }
             return true;
         }
         int k = mapKey(event.getKeyCode());
