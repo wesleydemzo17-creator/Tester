@@ -3,6 +3,12 @@ package org.desmume.android;
 import com.github.junrar.Archive;
 import com.github.junrar.rarfile.FileHeader;
 
+import net.sf.sevenzipjbinding.ExtractOperationResult;
+import net.sf.sevenzipjbinding.IInArchive;
+import net.sf.sevenzipjbinding.PropID;
+import net.sf.sevenzipjbinding.SevenZip;
+import net.sf.sevenzipjbinding.impl.RandomAccessFileInStream;
+
 import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry;
 import org.apache.commons.compress.archivers.sevenz.SevenZFile;
 
@@ -12,6 +18,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.RandomAccessFile;
 import java.util.Enumeration;
 import java.util.Locale;
 import java.util.zip.ZipEntry;
@@ -47,30 +54,87 @@ final class RomImporter {
                 }
                 return moveInto(picked, new File(romsDir, clean(displayName)));
             }
-            File rom;
-            try {
-                if (kind == ZIP) rom = fromZip(picked, romsDir);
-                else if (kind == SEVENZ) rom = fromSevenZ(picked, romsDir);
-                else rom = fromRar(picked, romsDir);
-            } catch (ImportException e) {
-                throw e;
-            } catch (Exception e) {
-                String type = e.getClass().getSimpleName();
-                if (type.contains("V5")) {
-                    throw new ImportException("Este .rar usa o formato RAR5, que ainda não é suportado. "
-                            + "Reempacote como .zip ou .7z.");
-                }
-                String m = String.valueOf(e.getMessage()).toLowerCase(Locale.ROOT);
-                if (m.contains("password") || m.contains("encrypt")) {
-                    throw new ImportException("Arquivo protegido por senha não é suportado.");
-                }
-                throw new ImportException("Não foi possível abrir o arquivo compactado (" + type + ").");
-            }
+            File rom = extract(picked, kind, romsDir);
             if (rom == null) throw new ImportException("Nenhum arquivo .nds encontrado dentro do arquivo compactado.");
             return rom;
         } finally {
             picked.delete(); // no-op if it was moved
         }
+    }
+
+    private interface Extractor { File run() throws Exception; }
+
+    /**
+     * Tries each extractor that can handle this kind of archive, in order, until one works.
+     * The native 7-Zip engine reads everything (including RAR5); the Java ones are kept as a
+     * second chance in case it is not available on the device.
+     */
+    private static File extract(final File archive, int kind, final File romsDir) throws ImportException {
+        Extractor nativeEngine = () -> fromSevenZipEngine(archive, romsDir);
+        Extractor[] order;
+        if (kind == ZIP) order = new Extractor[]{() -> fromZip(archive, romsDir), nativeEngine};
+        else if (kind == SEVENZ) order = new Extractor[]{nativeEngine, () -> fromSevenZ(archive, romsDir)};
+        else order = new Extractor[]{nativeEngine, () -> fromRar(archive, romsDir)};
+
+        StringBuilder details = new StringBuilder();
+        boolean password = false;
+        for (Extractor e : order) {
+            try {
+                return e.run(); // null = opened fine but holds no .nds; no point in trying another engine
+            } catch (ImportException ex) {
+                throw ex;
+            } catch (Throwable ex) { // includes a missing native library
+                String m = ex.getClass().getSimpleName() + ": " + ex.getMessage();
+                String lower = m.toLowerCase(Locale.ROOT);
+                if (lower.contains("password") || lower.contains("encrypt")) password = true;
+                if (details.length() > 0) details.append("\n");
+                details.append(m);
+            }
+        }
+        if (password) throw new ImportException("Arquivo protegido por senha não é suportado.");
+        throw new ImportException("Não foi possível abrir o arquivo compactado. Ele pode estar incompleto "
+                + "ou corrompido; tente baixar de novo ou descompactar em outro app e abrir o .nds.\n\n"
+                + "Detalhes técnicos:\n" + details);
+    }
+
+    /** ZIP, 7z, RAR and RAR5 through the native 7-Zip engine. */
+    private static File fromSevenZipEngine(File archive, File romsDir) throws Exception {
+        try (RandomAccessFile raf = new RandomAccessFile(archive, "r")) {
+            IInArchive in = SevenZip.openInArchive(null, new RandomAccessFileInStream(raf));
+            try {
+                int count = in.getNumberOfItems();
+                for (int i = 0; i < count; i++) {
+                    Object folder = in.getProperty(i, PropID.IS_FOLDER);
+                    Object path = in.getProperty(i, PropID.PATH);
+                    if (Boolean.TRUE.equals(folder) || !(path instanceof String) || !isRomName((String) path)) continue;
+
+                    File dest = new File(romsDir, clean((String) path));
+                    File part = new File(dest.getPath() + ".part");
+                    boolean ok = false;
+                    try (final OutputStream out = new FileOutputStream(part)) {
+                        final IOException[] failure = new IOException[1];
+                        ExtractOperationResult result = in.extractSlow(i, data -> {
+                            try {
+                                out.write(data);
+                            } catch (IOException e) {
+                                failure[0] = e;
+                                return 0;
+                            }
+                            return data.length;
+                        });
+                        if (failure[0] != null) throw failure[0];
+                        if (result != ExtractOperationResult.OK) throw new IOException("7-Zip: " + result);
+                        ok = true;
+                    } finally {
+                        if (!ok) part.delete();
+                    }
+                    return moveInto(part, dest);
+                }
+            } finally {
+                in.close();
+            }
+        }
+        return null;
     }
 
     /** Identifies the container by its first bytes, not by the file name. */

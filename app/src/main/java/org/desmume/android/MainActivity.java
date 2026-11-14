@@ -490,7 +490,11 @@ public class MainActivity extends Activity implements EmuView.Listener {
                 if (result != null) {
                     loadRom(result.getAbsolutePath());
                 } else {
-                    toast(message);
+                    // A dialog, not a toast: the text can be long and the user may need to copy it.
+                    dialog(new AlertDialog.Builder(MainActivity.this)
+                            .setTitle("Não foi possível abrir")
+                            .setMessage(message)
+                            .setPositiveButton("OK", null));
                 }
                 modal(false);
             });
