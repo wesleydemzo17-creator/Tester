@@ -29,6 +29,7 @@ set(CORE_SOURCES
 	${S}/movie.cpp ${S}/mic.cpp ${S}/cheatSystem.cpp ${S}/texcache.cpp
 	${S}/rasterize.cpp ${S}/version.cpp
 	${S}/metaspu/metaspu.cpp
+	${S}/filter/deposterize.cpp ${S}/filter/xbrz.cpp
 	${S}/frontend/modules/Disassembler.cpp
 	${S}/utils/advanscene.cpp ${S}/utils/datetime.cpp ${S}/utils/guid.cpp
 	${S}/utils/emufat.cpp ${S}/utils/fsnitro.cpp ${S}/utils/xstring.cpp
@@ -108,6 +109,9 @@ endif()
 find_package(ZLIB REQUIRED)
 find_package(Threads REQUIRED)
 target_link_libraries(desmume-jni PRIVATE ZLIB::ZLIB Threads::Threads)
+
+# Fail at link time (not at load time) if a core source file is missing.
+target_link_options(desmume-jni PRIVATE -Wl,--no-undefined)
 
 if(ANDROID)
 	target_link_libraries(desmume-jni PRIVATE log)
