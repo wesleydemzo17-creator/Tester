@@ -22,7 +22,7 @@ O APK sai em `app/build/outputs/apk/release/`. Ele é assinado com a chave de de
 
 ## Uso
 
-- **MENU → Abrir ROM (.nds)**: escolha um arquivo `.nds` (descompacte `.zip`/`.7z` antes). A ROM é copiada para a pasta do app.
+- **MENU → Abrir ROM**: aceita `.nds` direto ou dentro de `.zip`, `.7z` ou `.rar` (RAR5 e arquivos com senha não são suportados). A ROM é copiada para a pasta do app.
 - Tela de baixo = tela de toque do DS. Controles na tela; gamepads Bluetooth/USB e teclado também funcionam.
 - Saves do jogo (`.dsv`) e 5 slots de savestate ficam em `Android/data/org.desmume.android.port/files/`.
 - Botão Voltar abre o menu.

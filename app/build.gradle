@@ -56,5 +56,15 @@ android {
         jniLibs {
             useLegacyPackaging false
         }
+        resources {
+            excludes += ['META-INF/DEPENDENCIES', 'META-INF/LICENSE*', 'META-INF/NOTICE*', 'META-INF/*.kotlin_module']
+        }
     }
+}
+
+dependencies {
+    // Archive formats for ROM import: 7z (commons-compress + xz) and RAR4 (junrar).
+    implementation 'org.apache.commons:commons-compress:1.21'
+    implementation 'org.tukaani:xz:1.9'
+    implementation 'com.github.junrar:junrar:7.5.5'
 }

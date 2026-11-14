@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Scaled down so the artwork stays inside a circular launcher mask. -->
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:scaleX="0.8"
+        android:scaleY="0.8">
+        <path android:fillColor="#FFFFFF" android:fillType="evenOdd" android:pathData="M34,23 H74 A6,6 0 0 1 80,29 V46 A6,6 0 0 1 74,52 H34 A6,6 0 0 1 28,46 V29 A6,6 0 0 1 34,23 Z M37,29 H71 A1,1 0 0 1 72,30 V45 A1,1 0 0 1 71,46 H37 A1,1 0 0 1 36,45 V30 A1,1 0 0 1 37,29 Z" />
+        <path android:fillColor="#FFFFFF" android:fillType="evenOdd" android:pathData="M34,56 H74 A6,6 0 0 1 80,62 V79 A6,6 0 0 1 74,85 H34 A6,6 0 0 1 28,79 V62 A6,6 0 0 1 34,56 Z M44,62 H64 A1,1 0 0 1 65,63 V78 A1,1 0 0 1 64,79 H44 A1,1 0 0 1 43,78 V63 A1,1 0 0 1 44,62 Z" />
+    </group>
+</vector>

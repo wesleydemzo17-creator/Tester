@@ -162,7 +162,7 @@ public class MainActivity extends Activity implements EmuView.Listener {
         final ArrayList<String> labels = new ArrayList<>();
         final ArrayList<Runnable> actions = new ArrayList<>();
 
-        labels.add("Abrir ROM (.nds)");
+        labels.add("Abrir ROM (.nds, .zip, .7z, .rar)");
         actions.add(this::pickRom);
         if (!loaded && last != null && new File(last).exists()) {
             labels.add("Continuar: " + new File(last).getName());
@@ -351,40 +351,49 @@ public class MainActivity extends Activity implements EmuView.Listener {
         return name.replaceAll("[\\\\/:*?\"<>|]", "_");
     }
 
-    /** Copies the picked file into the app folder (the core needs a real file path). */
+    /**
+     * Copies the picked file into the app folder (the core needs a real file path) and, if it is
+     * a ZIP, 7z or RAR archive, takes the .nds out of it.
+     */
     private void importRom(final Uri uri) {
         final String name = displayName(uri);
-        if (!name.toLowerCase(java.util.Locale.ROOT).endsWith(".nds")) {
-            toast("Escolha um arquivo .nds (descompacte o .zip/.7z antes)");
-            return;
-        }
-        final File dest = new File(new File(baseDir, "roms"), name);
+        final File romsDir = new File(baseDir, "roms");
         final AlertDialog progress = new AlertDialog.Builder(this)
                 .setMessage("Importando " + name + "…").setCancelable(false).create();
         modal(true);
         progress.show();
 
         new Thread(() -> {
-            boolean ok = false;
-            File tmp = new File(dest.getPath() + ".part");
+            File rom = null;
+            String error = "Não foi possível copiar o arquivo";
+            File tmp = new File(romsDir, "import.tmp");
+            boolean copied = false;
             try (InputStream in = getContentResolver().openInputStream(uri);
                  OutputStream out = new FileOutputStream(tmp)) {
                 if (in != null) {
                     byte[] buf = new byte[1 << 16];
                     int n;
                     while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
-                    ok = true;
+                    copied = true;
                 }
             } catch (Exception ignored) { }
-            if (ok) ok = (!dest.exists() || dest.delete()) && tmp.renameTo(dest);
-            if (!ok) tmp.delete();
-            final boolean success = ok;
+            if (copied) {
+                try {
+                    rom = RomImporter.importFile(tmp, name, romsDir);
+                } catch (RomImporter.ImportException e) {
+                    error = e.getMessage();
+                }
+            } else {
+                tmp.delete();
+            }
+            final File result = rom;
+            final String message = error;
             runOnUiThread(() -> {
                 progress.dismiss();
-                if (success) {
-                    loadRom(dest.getAbsolutePath());
+                if (result != null) {
+                    loadRom(result.getAbsolutePath());
                 } else {
-                    toast("Não foi possível copiar a ROM");
+                    toast(message);
                 }
                 modal(false);
             });
