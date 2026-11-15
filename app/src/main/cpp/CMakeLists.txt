@@ -16,8 +16,8 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Library only: no desktop frontends, no system packages. zlib, libpng, LZMA (7z) and
-# SQLite come from the copies bundled with mGBA.
+# Library only: no desktop frontends. zlib comes from the system (the NDK has it); libpng and
+# LZMA (7z) come from the copies bundled with mGBA when the system has none.
 foreach(opt BUILD_QT BUILD_SDL BUILD_LIBRETRO BUILD_PERF BUILD_TEST BUILD_SUITE BUILD_CINEMA
 		BUILD_HEADLESS BUILD_EXAMPLE BUILD_PYTHON BUILD_SHARED BUILD_GL BUILD_GLES2 BUILD_LTO
 		USE_FFMPEG USE_EDITLINE USE_DISCORD_RPC USE_LUA USE_JSON_C USE_FREETYPE USE_ELF
@@ -32,9 +32,6 @@ set(USE_LZMA ON CACHE BOOL "" FORCE)
 if(ANDROID)
 	# High-resolution GBA renderer.
 	set(BUILD_GLES3 ON CACHE BOOL "" FORCE)
-	# Do not pick up system copies when cross-compiling: use the bundled ones.
-	set(CMAKE_DISABLE_FIND_PACKAGE_ZLIB ON)
-	set(CMAKE_DISABLE_FIND_PACKAGE_PNG ON)
 else()
 	set(BUILD_GLES3 OFF CACHE BOOL "" FORCE)
 endif()
