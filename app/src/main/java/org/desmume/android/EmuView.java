@@ -5,6 +5,7 @@ import android.content.SharedPreferences;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.RectF;
 import android.media.AudioAttributes;
 import android.media.AudioFormat;
@@ -40,6 +41,9 @@ public class EmuView extends FrameLayout implements Runnable {
             "Esticadas: as duas preenchem a tela",
             "Tela de cima em tela cheia (esticada)",
     };
+    public static final String[] CONTROL_STYLES = {
+            "Clássico (translúcido)", "Contorno", "Colorido", "Escuro", "Só letras"};
+    public static final String[] DPAD_STYLES = {"Cruz", "Disco", "Quatro botões"};
     public static final String[] HUD_CORNERS = {
             "superior esquerdo", "superior direito", "inferior esquerdo", "inferior direito"};
     private static final float ASPECT = (float) Native.SCREEN_H / Native.SCREEN_W; // height / width
@@ -94,6 +98,19 @@ public class EmuView extends FrameLayout implements Runnable {
     private final RectF dpad = new RectF();
     private final RectF menuBtn = new RectF();
     private final ArrayList<Btn> buttons = new ArrayList<>();
+
+    // On-screen control customisation. Control 0 is the D-pad, 1..8 the buttons, 9 MENU.
+    private static final int CTRL_COUNT = 10;
+    private final float[] ctrlCx = new float[CTRL_COUNT];   // centre as a fraction of the view; NaN = default
+    private final float[] ctrlCy = new float[CTRL_COUNT];
+    private final float[] ctrlS = new float[CTRL_COUNT];    // size multiplier of this control
+    private boolean ctrlEdit, ctrlPinching;
+    private int ctrlSel = -1;
+    private float ctrlPinchDist, ctrlPinchS;
+    private float ctrlScale = 1f, ctrlOpacity = 0.5f;
+    private int ctrlStyle, dpadStyle;
+    private final RectF ceDone = new RectF(), ceReset = new RectF(), ceMinus = new RectF(), cePlus = new RectF();
+    private final Path path = new Path();
 
     private final Paint ctrlFill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint ctrlStroke = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -193,6 +210,99 @@ public class EmuView extends FrameLayout implements Runnable {
         scale = Math.max(1, Math.min(4, scale));
         Native.setResolutionScale(scale);
         resScale = scale;
+    }
+
+    /**
+     * Look of the on-screen controls.
+     * @param style index into CONTROL_STYLES
+     * @param dpad index into DPAD_STYLES
+     * @param opacityPercent 10..100
+     * @param scalePercent overall size, 100 = normal
+     */
+    public void setControlLook(int style, int dpad, int opacityPercent, int scalePercent) {
+        ctrlStyle = Math.max(0, Math.min(CONTROL_STYLES.length - 1, style));
+        dpadStyle = Math.max(0, Math.min(DPAD_STYLES.length - 1, dpad));
+        ctrlOpacity = Math.max(10, Math.min(100, opacityPercent)) / 100f;
+        ctrlScale = Math.max(50, Math.min(200, scalePercent)) / 100f;
+        if (viewW > 0) layoutControls(viewW, viewH);
+        overlay.invalidate();
+    }
+
+    /** Enters the control editor: drag a control to move it, pinch or use − / + to resize it. */
+    public void startControlEdit() {
+        ctrlEdit = true;
+        ctrlSel = -1;
+        ctrlPinching = false;
+        touchKeys = 0;
+        stylusDown = false;
+        stylusPointerId = -1;
+        overlay.invalidate();
+    }
+
+    public boolean isEditingControls() { return ctrlEdit; }
+
+    public void finishControlEdit() {
+        if (!ctrlEdit) return;
+        ctrlEdit = false;
+        saveControls();
+        overlay.invalidate();
+    }
+
+    /** Puts every control back in its default place and size, for the current orientation. */
+    public void resetControls() {
+        prefs.edit().remove(controlsKey()).apply();
+        if (viewW > 0) layoutControls(viewW, viewH);
+        overlay.invalidate();
+    }
+
+    private String controlsKey() { return portrait() ? "ctrl_custom_p" : "ctrl_custom_l"; }
+
+    private RectF ctrlRect(int i) {
+        return i == 0 ? dpad : (i == CTRL_COUNT - 1 ? menuBtn : buttons.get(i - 1).r);
+    }
+
+    private void loadControls() {
+        for (int i = 0; i < CTRL_COUNT; i++) {
+            ctrlCx[i] = ctrlCy[i] = Float.NaN;
+            ctrlS[i] = 1f;
+        }
+        String v = prefs.getString(controlsKey(), null);
+        if (v == null) return;
+        String[] items = v.split(";");
+        for (int i = 0; i < items.length && i < CTRL_COUNT; i++) {
+            String[] p = items[i].split(",");
+            if (p.length != 3) continue;
+            try {
+                float cx = Float.parseFloat(p[0]), cy = Float.parseFloat(p[1]), sc = Float.parseFloat(p[2]);
+                if (cx >= 0f) { ctrlCx[i] = cx; ctrlCy[i] = cy; }
+                ctrlS[i] = Math.max(0.4f, Math.min(3f, sc));
+            } catch (NumberFormatException ignored) {
+                // Keep the default for this control.
+            }
+        }
+    }
+
+    private void saveControls() {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < CTRL_COUNT; i++) {
+            if (i > 0) sb.append(';');
+            boolean moved = !Float.isNaN(ctrlCx[i]);
+            sb.append(String.format(Locale.US, "%.5f,%.5f,%.3f", moved ? ctrlCx[i] : -1f, moved ? ctrlCy[i] : -1f, ctrlS[i]));
+        }
+        prefs.edit().putString(controlsKey(), sb.toString()).apply();
+    }
+
+    /** Applies the saved position and size of each control on top of the default layout. */
+    private void applyControlCustom() {
+        for (int i = 0; i < CTRL_COUNT; i++) {
+            RectF r = ctrlRect(i);
+            float w = r.width() * ctrlS[i] * ctrlScale, h = r.height() * ctrlS[i] * ctrlScale;
+            float cx = Float.isNaN(ctrlCx[i]) ? r.centerX() : ctrlCx[i] * viewW;
+            float cy = Float.isNaN(ctrlCy[i]) ? r.centerY() : ctrlCy[i] * viewH;
+            cx = Math.max(w / 2f, Math.min(viewW - w / 2f, cx));
+            cy = Math.max(h / 2f, Math.min(viewH - h / 2f, cy));
+            r.set(cx - w / 2f, cy - h / 2f, cx + w / 2f, cy + h / 2f);
+        }
     }
 
     public void onHostResume() { glView.onResume(); }
@@ -419,6 +529,18 @@ public class EmuView extends FrameLayout implements Runnable {
             find(Native.KEY_START).r.set(rc - bw / 2f, h - bh * 1.5f, rc + bw / 2f, h - bh * 0.5f);
             menuBtn.set(rc - bw / 2f, bh * 2.2f, rc + bw / 2f, bh * 3.2f);
         }
+        if (!ctrlEdit) loadControls(); // while editing, the arrays hold the unsaved changes
+        applyControlCustom();
+
+        // Control editor buttons, across the middle.
+        float cg = unit * 0.15f;
+        float cw = Math.min(unit * 2.4f, (w - cg * 5f) / 4f), ch = unit * 0.85f, cyy = h * 0.5f - ch / 2f;
+        float cx0 = (w - cw * 4f - cg * 3f) / 2f;
+        ceReset.set(cx0, cyy, cx0 + cw, cyy + ch);
+        ceMinus.set(cx0 + (cw + cg), cyy, cx0 + (cw + cg) + cw, cyy + ch);
+        cePlus.set(cx0 + (cw + cg) * 2f, cyy, cx0 + (cw + cg) * 2f + cw, cyy + ch);
+        ceDone.set(cx0 + (cw + cg) * 3f, cyy, cx0 + (cw + cg) * 3f + cw, cyy + ch);
+
         // Layout editor buttons, bottom centre.
         float eg = unit * 0.15f;
         float ew = Math.min(unit * 2.6f, (w - eg * 5f) / 4f), eh = unit * 0.8f, ey = h - eh * 1.4f;
@@ -574,7 +696,83 @@ public class EmuView extends FrameLayout implements Runnable {
         return true;
     }
 
+    private boolean controlEditTouch(MotionEvent e) {
+        int action = e.getActionMasked();
+        switch (action) {
+            case MotionEvent.ACTION_DOWN: {
+                float x = e.getX(0), y = e.getY(0);
+                ctrlPinching = false;
+                if (ceDone.contains(x, y)) {
+                    finishControlEdit();
+                    return true;
+                }
+                if (ceReset.contains(x, y)) {
+                    for (int i = 0; i < CTRL_COUNT; i++) {
+                        ctrlCx[i] = ctrlCy[i] = Float.NaN;
+                        ctrlS[i] = 1f;
+                    }
+                    ctrlSel = -1;
+                } else if (ceMinus.contains(x, y) || cePlus.contains(x, y)) {
+                    if (ctrlSel >= 0) {
+                        float k = cePlus.contains(x, y) ? 1.1f : 1f / 1.1f;
+                        ctrlS[ctrlSel] = Math.max(0.4f, Math.min(3f, ctrlS[ctrlSel] * k));
+                    }
+                } else {
+                    // Topmost control under the finger; small ones get a little extra reach.
+                    int hit = -1;
+                    for (int i = CTRL_COUNT - 1; i >= 0 && hit < 0; i--) {
+                        RectF r = ctrlRect(i);
+                        float slop = Math.max(0f, unit * 0.4f - Math.min(r.width(), r.height()) / 2f);
+                        if (x >= r.left - slop && x <= r.right + slop && y >= r.top - slop && y <= r.bottom + slop) hit = i;
+                    }
+                    ctrlSel = hit;
+                    lastX = x;
+                    lastY = y;
+                }
+                break;
+            }
+            case MotionEvent.ACTION_POINTER_DOWN:
+                if (ctrlSel >= 0 && e.getPointerCount() >= 2) {
+                    ctrlPinchDist = Math.max(1f, (float) Math.hypot(e.getX(0) - e.getX(1), e.getY(0) - e.getY(1)));
+                    ctrlPinchS = ctrlS[ctrlSel];
+                    ctrlPinching = true;
+                }
+                break;
+            case MotionEvent.ACTION_MOVE: {
+                if (ctrlSel < 0) return true;
+                if (ctrlPinching && e.getPointerCount() >= 2) {
+                    float d = (float) Math.hypot(e.getX(0) - e.getX(1), e.getY(0) - e.getY(1));
+                    ctrlS[ctrlSel] = Math.max(0.4f, Math.min(3f, ctrlPinchS * d / ctrlPinchDist));
+                } else if (!ctrlPinching) {
+                    RectF r = ctrlRect(ctrlSel);
+                    float x = e.getX(0), y = e.getY(0);
+                    ctrlCx[ctrlSel] = Math.max(0f, Math.min(1f, (r.centerX() + x - lastX) / viewW));
+                    ctrlCy[ctrlSel] = Math.max(0f, Math.min(1f, (r.centerY() + y - lastY) / viewH));
+                    lastX = x;
+                    lastY = y;
+                }
+                break;
+            }
+            case MotionEvent.ACTION_POINTER_UP: {
+                ctrlPinching = false;
+                int keep = (e.getActionIndex() == 0) ? 1 : 0;
+                if (keep < e.getPointerCount()) {
+                    lastX = e.getX(keep);
+                    lastY = e.getY(keep);
+                }
+                break;
+            }
+            default:
+                ctrlPinching = false;
+                return true;
+        }
+        layoutControls(viewW, viewH);
+        overlay.invalidate();
+        return true;
+    }
+
     private boolean handleTouch(MotionEvent e) {
+        if (ctrlEdit) return controlEditTouch(e);
         if (editMode) return editTouch(e);
         int action = e.getActionMasked();
         int idx = e.getActionIndex();
@@ -664,6 +862,7 @@ public class EmuView extends FrameLayout implements Runnable {
             super.onSizeChanged(w, h, oldw, oldh);
             viewW = w;
             viewH = h;
+            ctrlEdit = false; // unsaved control edits belong to the previous orientation
             relayout();
         }
 
@@ -675,6 +874,10 @@ public class EmuView extends FrameLayout implements Runnable {
             if (viewW <= 0) return;
             if (editMode) {
                 drawEditor(c);
+                return;
+            }
+            if (ctrlEdit) {
+                drawControlEditor(c);
                 return;
             }
             if (noRom) {
@@ -744,42 +947,147 @@ public class EmuView extends FrameLayout implements Runnable {
         drawPill(c, editDone, "Concluir", Color.argb(220, 20, 110, 60));
     }
 
+    // Tints for the "Colorido" style.
+    private static final int TINT_A = 0xE53935, TINT_B = 0xFDD835, TINT_X = 0x1E88E5, TINT_Y = 0x43A047,
+            TINT_SHOULDER = 0x9E9E9E, TINT_NONE = 0xFFFFFF;
+
+    private static int tintOf(int key) {
+        if (key == Native.KEY_A) return TINT_A;
+        if (key == Native.KEY_B) return TINT_B;
+        if (key == Native.KEY_X) return TINT_X;
+        if (key == Native.KEY_Y) return TINT_Y;
+        if (key == Native.KEY_L || key == Native.KEY_R) return TINT_SHOULDER;
+        return TINT_NONE;
+    }
+
+    private int alpha(int base) { return Math.max(0, Math.min(255, Math.round(base * ctrlOpacity))); }
+
+    /** Sets ctrlFill for a control in the current style. Returns false if nothing should be filled. */
+    private boolean fillFor(boolean down, int tint) {
+        int a, rgb;
+        switch (ctrlStyle) {
+            case 1: a = down ? alpha(260) : 0; rgb = 0xFFFFFF; break;
+            case 2: a = alpha(down ? 440 : 230); rgb = tint; break;
+            case 3: a = alpha(340); rgb = down ? 0x707070 : 0x181818; break;
+            case 4: a = down ? alpha(200) : 0; rgb = 0xFFFFFF; break;
+            default: a = alpha(down ? 300 : 120); rgb = 0xFFFFFF; break;
+        }
+        ctrlFill.setColor(Color.argb(a, (rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF));
+        return a > 0;
+    }
+
+    private boolean strokes() { return ctrlStyle != 4; }
+
+    /** Paints for the controls follow the chosen opacity; other overlay drawing uses fixed ones. */
+    private void controlPaints(boolean on) {
+        ctrlStroke.setColor(Color.argb(on ? alpha(ctrlStyle == 1 ? 420 : 300) : 150, 255, 255, 255));
+        textPaint.setColor(Color.argb(on ? alpha(440) : 210, 255, 255, 255));
+        if (!on) textPaint.setTextSize(unit * 0.42f);
+    }
+
+    private void drawButton(Canvas c, RectF r, String label, boolean round, boolean down, int tint) {
+        float rr = round ? 0f : r.height() / 2f;
+        if (fillFor(down, tint)) {
+            if (round) c.drawOval(r, ctrlFill);
+            else c.drawRoundRect(r, rr, rr, ctrlFill);
+        }
+        if (strokes()) {
+            if (round) c.drawOval(r, ctrlStroke);
+            else c.drawRoundRect(r, rr, rr, ctrlStroke);
+        }
+        float size = Math.min(r.height() * 0.5f, r.width() * 1.5f / Math.max(2, label.length()));
+        textPaint.setTextSize(size);
+        c.drawText(label, r.centerX(), r.centerY() + size * 0.35f, textPaint);
+    }
+
+    /** A small arrow head pointing in direction (dx, dy), centred on (cx, cy). */
+    private void drawArrow(Canvas c, float cx, float cy, float dx, float dy, float size, boolean down) {
+        path.reset();
+        path.moveTo(cx + dx * size, cy + dy * size);
+        path.lineTo(cx - dx * size * 0.5f - dy * size * 0.8f, cy - dy * size * 0.5f + dx * size * 0.8f);
+        path.lineTo(cx - dx * size * 0.5f + dy * size * 0.8f, cy - dy * size * 0.5f - dx * size * 0.8f);
+        path.close();
+        ctrlFill.setColor(Color.argb(alpha(down ? 510 : 300), 255, 255, 255));
+        c.drawPath(path, ctrlFill);
+    }
+
+    private void drawDpad(Canvas c, int keys) {
+        float cx = dpad.centerX(), cy = dpad.centerY(), arm = dpad.width() / 2f, th = dpad.width() / 6f;
+        boolean left = (keys & Native.KEY_LEFT) != 0, right = (keys & Native.KEY_RIGHT) != 0;
+        boolean up = (keys & Native.KEY_UP) != 0, dn = (keys & Native.KEY_DOWN) != 0;
+
+        if (dpadStyle == 1) {
+            // Disc with four arrows.
+            if (fillFor(false, TINT_NONE)) c.drawOval(dpad, ctrlFill);
+            if (strokes()) c.drawOval(dpad, ctrlStroke);
+            float d = arm * 0.62f, sz = arm * 0.2f;
+            drawArrow(c, cx - d, cy, -1, 0, sz, left);
+            drawArrow(c, cx + d, cy, 1, 0, sz, right);
+            drawArrow(c, cx, cy - d, 0, -1, sz, up);
+            drawArrow(c, cx, cy + d, 0, 1, sz, dn);
+            return;
+        }
+        if (dpadStyle == 2) {
+            // Four separate buttons.
+            float bs = arm * 0.62f, d = arm - bs / 2f, rr = bs * 0.25f, sz = bs * 0.26f;
+            float[][] at = {{-d, 0, -1, 0}, {d, 0, 1, 0}, {0, -d, 0, -1}, {0, d, 0, 1}};
+            boolean[] down = {left, right, up, dn};
+            for (int i = 0; i < 4; i++) {
+                float bx = cx + at[i][0], by = cy + at[i][1];
+                if (fillFor(down[i], TINT_NONE)) c.drawRoundRect(bx - bs / 2f, by - bs / 2f, bx + bs / 2f, by + bs / 2f, rr, rr, ctrlFill);
+                if (strokes()) c.drawRoundRect(bx - bs / 2f, by - bs / 2f, bx + bs / 2f, by + bs / 2f, rr, rr, ctrlStroke);
+                drawArrow(c, bx, by, at[i][2], at[i][3], sz, down[i]);
+            }
+            return;
+        }
+        // Cross.
+        if (fillFor(false, TINT_NONE)) {
+            c.drawRoundRect(cx - arm, cy - th, cx + arm, cy + th, th * 0.4f, th * 0.4f, ctrlFill);
+            c.drawRect(cx - th, cy - arm + th * 0.2f, cx + th, cy - th, ctrlFill);
+            c.drawRect(cx - th, cy + th, cx + th, cy + arm - th * 0.2f, ctrlFill);
+        }
+        if (strokes()) {
+            c.drawRoundRect(cx - arm, cy - th, cx + arm, cy + th, th * 0.4f, th * 0.4f, ctrlStroke);
+            c.drawRoundRect(cx - th, cy - arm, cx + th, cy + arm, th * 0.4f, th * 0.4f, ctrlStroke);
+        }
+        float d = arm - th, sz = th * 0.45f;
+        drawArrow(c, cx - d, cy, -1, 0, sz, left);
+        drawArrow(c, cx + d, cy, 1, 0, sz, right);
+        drawArrow(c, cx, cy - d, 0, -1, sz, up);
+        drawArrow(c, cx, cy + d, 0, 1, sz, dn);
+    }
+
     private void drawControls(Canvas c) {
         int keys = touchKeys | padKeys;
-        float txtOff = textPaint.getTextSize() * 0.35f;
+        controlPaints(true);
 
         // MENU is always drawn so the app can never get stuck without it.
-        ctrlFill.setColor(Color.argb(70, 255, 255, 255));
-        float mr = menuBtn.height() / 2f;
-        c.drawRoundRect(menuBtn, mr, mr, ctrlFill);
-        c.drawRoundRect(menuBtn, mr, mr, ctrlStroke);
-        c.drawText("MENU", menuBtn.centerX(), menuBtn.centerY() + txtOff, textPaint);
-        if (!showControls) return;
-
-        // D-pad
-        float cx = dpad.centerX(), cy = dpad.centerY(), arm = dpad.width() / 2f, th = dpad.width() / 6f;
-        ctrlFill.setColor(Color.argb(60, 255, 255, 255));
-        c.drawRoundRect(cx - arm, cy - th, cx + arm, cy + th, th * 0.4f, th * 0.4f, ctrlFill);
-        c.drawRoundRect(cx - th, cy - arm, cx + th, cy + arm, th * 0.4f, th * 0.4f, ctrlFill);
-        ctrlFill.setColor(Color.argb(140, 255, 255, 255));
-        if ((keys & Native.KEY_LEFT) != 0) c.drawRect(cx - arm, cy - th, cx - th, cy + th, ctrlFill);
-        if ((keys & Native.KEY_RIGHT) != 0) c.drawRect(cx + th, cy - th, cx + arm, cy + th, ctrlFill);
-        if ((keys & Native.KEY_UP) != 0) c.drawRect(cx - th, cy - arm, cx + th, cy - th, ctrlFill);
-        if ((keys & Native.KEY_DOWN) != 0) c.drawRect(cx - th, cy + th, cx + th, cy + arm, ctrlFill);
-
-        for (Btn b : buttons) {
-            boolean down = (keys & b.key) != 0;
-            ctrlFill.setColor(Color.argb(down ? 150 : 60, 255, 255, 255));
-            if (b.round) {
-                c.drawOval(b.r, ctrlFill);
-                c.drawOval(b.r, ctrlStroke);
-            } else {
-                float r = b.r.height() / 2f;
-                c.drawRoundRect(b.r, r, r, ctrlFill);
-                c.drawRoundRect(b.r, r, r, ctrlStroke);
+        drawButton(c, menuBtn, "MENU", false, false, TINT_NONE);
+        if (showControls || ctrlEdit) {
+            drawDpad(c, keys);
+            for (Btn b : buttons) {
+                drawButton(c, b.r, b.label, b.round, (keys & b.key) != 0, tintOf(b.key));
             }
-            c.drawText(b.label, b.r.centerX(), b.r.centerY() + txtOff, textPaint);
         }
+        controlPaints(false);
+    }
+
+    private void drawControlEditor(Canvas c) {
+        drawControls(c);
+        if (ctrlSel >= 0) {
+            RectF r = ctrlRect(ctrlSel);
+            ctrlFill.setColor(Color.argb(60, 80, 200, 120));
+            c.drawRect(r.left, r.top, r.right, r.bottom, ctrlFill);
+            c.drawRoundRect(r.left, r.top, r.right, r.bottom, 0f, 0f, ctrlStroke);
+        }
+        float ts = textPaint.getTextSize();
+        c.drawText("Toque e arraste um controle \u2022 Pin\u00e7a ou \u2212 / + mudam o tamanho",
+                viewW / 2f, ceDone.top - ts * 0.8f, textPaint);
+        int dark = Color.argb(210, 30, 30, 30);
+        drawPill(c, ceReset, "Padr\u00e3o", dark);
+        drawPill(c, ceMinus, "\u2212", dark);
+        drawPill(c, cePlus, "+", dark);
+        drawPill(c, ceDone, "Concluir", Color.argb(220, 20, 110, 60));
     }
 
     // ------------------------------------------------------------------ audio

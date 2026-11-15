@@ -47,6 +47,18 @@ O APK sai em `app/build/outputs/apk/release/`. Ele é assinado com a chave de de
 | Compilação | `-O3`, somente `arm64-v8a`, páginas de 16 KB suportadas. |
 | Avanço rápido | No menu, com o jogo aberto. |
 
+## Controles na tela
+
+MENU → **Controles na tela**: cinco estilos de botão, três formatos de direcional (cruz, disco,
+quatro botões), opacidade, tamanho geral e um editor para mover e redimensionar cada controle
+(arrastar; pinça ou − / +). As posições são salvas por orientação.
+
+## Multiplayer local (experimental)
+
+MENU → **Multiplayer local** liga a emulação sem fio do DeSmuME no modo ad-hoc: os quadros do
+wireless do DS viajam como broadcast UDP (porta 7000) na rede Wi-Fi. Os aparelhos precisam estar
+na mesma rede. Não usa Bluetooth. É experimental no próprio DeSmuME: muitos jogos não conectam.
+
 ## Cheats
 
 MENU → **Cheats** (com um jogo aberto):
@@ -65,7 +77,7 @@ jogos; faça um savestate antes de ativar.
 - Somente aparelhos ARM de 64 bits, Android 8.0+.
 - Esticar a tela só deforma a imagem 4:3 do DS; o jogo não passa a renderizar em 16:9 de verdade.
 - Uso e clock da GPU dependem de arquivos do sistema que muitos aparelhos bloqueiam para apps.
-- Sem microfone, Wi-Fi, cheats e filtros de imagem.
+- Sem microfone e sem Wi-Fi Connection (jogo online); o multiplayer local é experimental.
 - Sem BIOS/firmware externos (usa a emulação HLE do núcleo).
 
 ## Estrutura

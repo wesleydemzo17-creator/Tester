@@ -107,7 +107,8 @@ target_compile_options(desmume-jni PRIVATE
 	-ffunction-sections -fdata-sections
 	-w
 )
-target_compile_definitions(desmume-jni PRIVATE NDEBUG)
+# EXPERIMENTAL_WIFI_COMM: upstream's opt-in switch for wireless emulation (off unless the app asks).
+target_compile_definitions(desmume-jni PRIVATE NDEBUG EXPERIMENTAL_WIFI_COMM)
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
 	target_compile_definitions(desmume-jni PRIVATE HOST_64)
 else()

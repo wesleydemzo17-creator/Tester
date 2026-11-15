@@ -36,6 +36,8 @@ public final class Native {
     public static synchronized native boolean saveState(String path);
     public static synchronized native boolean loadState(String path);
     public static synchronized native void flushSaves();
+    public static synchronized native void setLocalWireless(boolean enabled, String mac);
+    public static synchronized native boolean localWirelessActive();
     public static synchronized native void cheatsClear();
     public static synchronized native boolean cheatsAddActionReplay(String code, String description);
     public static synchronized native int cheatsActiveCount();

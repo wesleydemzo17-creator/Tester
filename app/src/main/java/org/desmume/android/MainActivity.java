@@ -2,10 +2,12 @@ package org.desmume.android;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.net.Uri;
+import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.OpenableColumns;
@@ -31,6 +33,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 public class MainActivity extends Activity implements EmuView.Listener {
 
@@ -48,6 +51,7 @@ public class MainActivity extends Activity implements EmuView.Listener {
     private boolean resumed;
     private int modalCount;
     private boolean gpuActive;
+    private WifiManager.MulticastLock multicastLock;
     private boolean rendererApplied;
     private volatile boolean jitGuardArmed;
     private volatile int jitGuardTicks;
@@ -116,6 +120,10 @@ public class MainActivity extends Activity implements EmuView.Listener {
     @Override
     protected void onDestroy() {
         view.stop();
+        if (multicastLock != null) {
+            try { multicastLock.release(); } catch (RuntimeException ignored) { }
+            multicastLock = null;
+        }
         if (coreReady && isFinishing()) {
             Native.closeRom();
         }
@@ -187,7 +195,43 @@ public class MainActivity extends Activity implements EmuView.Listener {
         view.setHud(prefs.getBoolean("hud_details", true), prefs.getInt("hud_scale", 100),
                 prefs.getInt("hud_opacity", 80), prefs.getInt("hud_corner", 0));
         view.setShowControls(prefs.getBoolean("show_controls", true));
+        view.setControlLook(prefs.getInt("ctrl_style", 0), prefs.getInt("dpad_style", 0),
+                prefs.getInt("ctrl_opacity", 50), prefs.getInt("ctrl_scale", 100));
+        applyWireless();
         view.setFrameskip(prefs.getInt("frameskip", EmuView.FRAMESKIP_AUTO));
+    }
+
+    /** This device's console MAC address: random, made once, so two phones never share one. */
+    private String consoleMac() {
+        String mac = prefs.getString("console_mac", null);
+        if (mac == null || mac.length() != 12) {
+            java.util.Random r = new java.util.Random();
+            mac = String.format(Locale.ROOT, "0009BF%02X%02X%02X", r.nextInt(256), r.nextInt(256), r.nextInt(256));
+            prefs.edit().putString("console_mac", mac).apply();
+        }
+        return mac;
+    }
+
+    /** Local wireless (experimental): the core sends DS wireless frames as UDP broadcasts on the Wi-Fi network. */
+    private void applyWireless() {
+        boolean on = prefs.getBoolean("wireless", false);
+        Native.setLocalWireless(on, consoleMac());
+        try {
+            if (on && multicastLock == null) {
+                // Without this lock many phones drop incoming broadcast packets.
+                WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+                if (wm != null) {
+                    multicastLock = wm.createMulticastLock("desmume-local-wireless");
+                    multicastLock.setReferenceCounted(false);
+                    multicastLock.acquire();
+                }
+            } else if (!on && multicastLock != null) {
+                multicastLock.release();
+                multicastLock = null;
+            }
+        } catch (RuntimeException ignored) {
+            // The lock only improves reception; the option still works without it on some devices.
+        }
     }
 
     /** Switches the DS 3D graphics between the GPU (OpenGL ES 3) and the CPU renderer. */
@@ -262,6 +306,10 @@ public class MainActivity extends Activity implements EmuView.Listener {
         actions.add(this::showRenderer);
         labels.add("Shader");
         actions.add(this::showShaders);
+        labels.add("Controles na tela");
+        actions.add(this::showControlsMenu);
+        labels.add("Multiplayer local: " + (prefs.getBoolean("wireless", false) ? "ligado (experimental)" : "desligado"));
+        actions.add(this::showWireless);
         labels.add("Layout das telas");
         actions.add(this::showLayouts);
         labels.add("Monitor de desempenho");
@@ -279,13 +327,13 @@ public class MainActivity extends Activity implements EmuView.Listener {
     }
 
     private void showSettings() {
-        final String[] keys = {"jit", "sound", "advanced_timing", "show_controls"};
-        final boolean[] defaults = {true, true, true, true};
+        final String[] keys = {"jit", "sound", "advanced_timing"};
+        final boolean[] defaults = {true, true, true};
         final String[] labels = {
                 Native.jitAvailable() ? "JIT (recompilador dinâmico) — mais rápido" : "JIT (indisponível neste aparelho)",
                 "Som",
                 "Timing avançado (mais compatível, mais lento)",
-                "Mostrar controles na tela"};
+        };
         final boolean[] values = new boolean[keys.length];
         for (int i = 0; i < keys.length; i++) values[i] = prefs.getBoolean(keys[i], defaults[i]);
         final boolean oldJit = values[0];
@@ -620,6 +668,88 @@ public class MainActivity extends Activity implements EmuView.Listener {
                 }));
     }
 
+    // ------------------------------------------------------------------ on-screen controls
+    private void showControlsMenu() {
+        final int style = prefs.getInt("ctrl_style", 0), dpad = prefs.getInt("dpad_style", 0);
+        final int opacity = prefs.getInt("ctrl_opacity", 50), scale = prefs.getInt("ctrl_scale", 100);
+        final String[] labels = {
+                "Estilo dos botões: " + EmuView.CONTROL_STYLES[Math.min(style, EmuView.CONTROL_STYLES.length - 1)],
+                "Formato do direcional: " + EmuView.DPAD_STYLES[Math.min(dpad, EmuView.DPAD_STYLES.length - 1)],
+                "Opacidade: " + opacity + "%",
+                "Tamanho geral: " + scale + "%",
+                "Mover e redimensionar cada controle…",
+                "Restaurar posições e tamanhos",
+                "Mostrar controles: " + (prefs.getBoolean("show_controls", true) ? "sim" : "não"),
+                "Fechar"};
+        dialog(new AlertDialog.Builder(this)
+                .setTitle("Controles na tela")
+                .setItems(labels, (d, which) -> view.post(() -> {
+                    if (which == 0) {
+                        pickControl("Estilo dos botões", EmuView.CONTROL_STYLES, null, "ctrl_style", style);
+                    } else if (which == 1) {
+                        pickControl("Formato do direcional", EmuView.DPAD_STYLES, null, "dpad_style", dpad);
+                    } else if (which == 2) {
+                        pickControl("Opacidade", null, new int[]{20, 35, 50, 65, 80, 100}, "ctrl_opacity", opacity);
+                    } else if (which == 3) {
+                        pickControl("Tamanho geral", null, new int[]{60, 80, 100, 120, 140, 160}, "ctrl_scale", scale);
+                    } else if (which == 4) {
+                        if (!prefs.getBoolean("show_controls", true)) {
+                            prefs.edit().putBoolean("show_controls", true).apply();
+                            applySettings();
+                        }
+                        view.startControlEdit();
+                    } else if (which == 5) {
+                        view.resetControls();
+                        toast("Controles restaurados para esta orientação.");
+                    } else if (which == 6) {
+                        prefs.edit().putBoolean("show_controls", !prefs.getBoolean("show_controls", true)).apply();
+                        applySettings();
+                        showControlsMenu();
+                    }
+                })));
+    }
+
+    /** One-of-many choice saved in an int preference: either an index into names, or one of values (as a percentage). */
+    private void pickControl(String title, String[] names, final int[] values, final String key, int current) {
+        String[] labels = names;
+        int checked = current;
+        if (values != null) {
+            labels = new String[values.length];
+            checked = -1;
+            for (int i = 0; i < values.length; i++) {
+                labels[i] = values[i] + "%";
+                if (values[i] == current) checked = i;
+            }
+        }
+        dialog(new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setSingleChoiceItems(labels, checked, (d, which) -> {
+                    prefs.edit().putInt(key, values != null ? values[which] : which).apply();
+                    applySettings();
+                    d.dismiss();
+                    view.post(this::showControlsMenu);
+                }));
+    }
+
+    // ------------------------------------------------------------------ local multiplayer
+    private void showWireless() {
+        final boolean on = prefs.getBoolean("wireless", false);
+        dialog(new AlertDialog.Builder(this)
+                .setTitle("Multiplayer local (experimental)")
+                .setMessage("Usa a rede Wi-Fi, não o Bluetooth: os aparelhos precisam estar na mesma rede "
+                        + "(ou um deles como roteador/hotspot), todos com este app e esta opção ligada.\n\n"
+                        + "É a emulação sem fio do DeSmuME, que é experimental: muitos jogos não se encontram "
+                        + "ou perdem a conexão. Pode deixar a emulação mais lenta.\n\n"
+                        + "A mudança vale ao abrir ou reiniciar o jogo.\n\n"
+                        + "Estado atual: " + (on ? "ligado" : "desligado"))
+                .setPositiveButton(on ? "Desligar" : "Ligar", (d, w) -> {
+                    prefs.edit().putBoolean("wireless", !on).apply();
+                    applySettings();
+                    toast(Native.romLoaded() ? "Use \"Reiniciar jogo\" para valer." : "Pronto. Abra o jogo.");
+                })
+                .setNegativeButton("Fechar", null));
+    }
+
     private void showFrameskip() {
         final String[] labels = {"Automático", "0 (sem pular)", "1", "2", "3", "4"};
         int cur = prefs.getInt("frameskip", EmuView.FRAMESKIP_AUTO);
@@ -809,7 +939,8 @@ public class MainActivity extends Activity implements EmuView.Listener {
     public boolean dispatchKeyEvent(KeyEvent event) {
         if (event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
             if (event.getAction() == KeyEvent.ACTION_UP) {
-                if (view.isEditingLayout()) view.finishLayoutEdit();
+                if (view.isEditingControls()) view.finishControlEdit();
+                else if (view.isEditingLayout()) view.finishLayoutEdit();
                 else showMenu();
             }
             return true;

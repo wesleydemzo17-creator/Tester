@@ -33,6 +33,8 @@
 #include "slot2.h"
 #include "mc.h"
 #include "cheatSystem.h"
+#include "wifi.h"
+#include "firmware.h"
 #include "utils/colorspacehandler/colorspacehandler.h"
 #ifdef HAVE_JIT
 #include "arm_jit.h"
@@ -632,6 +634,24 @@ JNIFN(jstring, romTitle)(JNIEnv *env, jclass)
 		if (title[i] != 0 && ((unsigned char)title[i] < 0x20 || (unsigned char)title[i] > 0x7E)) title[i] = ' ';
 	}
 	return env->NewStringUTF(title);
+}
+
+// ---------------------------------------------------------------------------
+// Local wireless (experimental). Turns on the core's ad-hoc mode, which carries the DS wireless
+// frames as UDP broadcasts on port 7000 of the local network. Every console needs its own MAC
+// address (12 hex digits). Takes effect on the next loadRom()/reset().
+// ---------------------------------------------------------------------------
+JNIFN(void, setLocalWireless)(JNIEnv *env, jclass, jboolean enabled, jstring mac)
+{
+	if (!g_inited || wifiHandler == NULL) return;
+	std::string m = jstr(env, mac);
+	if (m.size() == 12) NDS_SetFirmwareMACAddressFromStr(CommonSettings.fwConfig, m.c_str());
+	wifiHandler->SetEmulationLevel((enabled == JNI_TRUE) ? WifiEmulationLevel_Normal : WifiEmulationLevel_Off);
+}
+
+JNIFN(jboolean, localWirelessActive)(JNIEnv *, jclass)
+{
+	return (wifiHandler != NULL && wifiHandler->GetCurrentEmulationLevel() != WifiEmulationLevel_Off) ? JNI_TRUE : JNI_FALSE;
 }
 
 // Pushes pending battery-save (.dsv) writes to disk; call when the app goes to background.
