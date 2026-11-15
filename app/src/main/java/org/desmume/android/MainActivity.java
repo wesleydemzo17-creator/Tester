@@ -15,6 +15,14 @@ import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
+import android.text.Editable;
+import android.text.InputType;
+import android.text.TextWatcher;
+import android.widget.ArrayAdapter;
+import android.widget.EditText;
+import android.widget.LinearLayout;
+import android.widget.ListView;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.File;
@@ -22,6 +30,7 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
+import java.util.List;
 
 public class MainActivity extends Activity implements EmuView.Listener {
 
@@ -34,6 +43,7 @@ public class MainActivity extends Activity implements EmuView.Listener {
     private SharedPreferences prefs;
     private File baseDir;
     private String romPath;
+    private List<Cheats.Cheat> cheats = new ArrayList<>();
     private boolean coreReady;
     private boolean resumed;
     private int modalCount;
@@ -233,6 +243,10 @@ public class MainActivity extends Activity implements EmuView.Listener {
             actions.add(() -> loadRom(last));
         }
         if (loaded) {
+            int active = 0;
+            for (Cheats.Cheat c : cheats) if (c.enabled) active++;
+            labels.add("Cheats" + (active > 0 ? " (" + active + " ativos)" : ""));
+            actions.add(this::showCheats);
             labels.add("Salvar estado");
             actions.add(() -> showSlots(true));
             labels.add("Carregar estado");
@@ -287,6 +301,214 @@ public class MainActivity extends Activity implements EmuView.Listener {
                     if (values[0] != oldJit && Native.romLoaded()) {
                         toast("A mudança do JIT vale a partir de \"Reiniciar jogo\".");
                     }
+                })
+                .setNegativeButton("Cancelar", null));
+    }
+
+    // ------------------------------------------------------------------ cheats
+    private void saveCheats() {
+        if (romPath == null) return;
+        Cheats.save(baseDir, romPath, cheats);
+        int accepted = Cheats.apply(cheats);
+        int wanted = 0;
+        for (Cheats.Cheat c : cheats) if (c.enabled) wanted++;
+        if (accepted < wanted) toast((wanted - accepted) + " cheat(s) com código inválido foram ignorados.");
+    }
+
+    private void showCheats() {
+        final String[] labels = {
+                "Ativar / desativar (" + cheats.size() + " salvos)",
+                "Buscar no banco de cheats",
+                "Adicionar código manualmente",
+                "Apagar cheats",
+                "Desativar todos"};
+        dialog(new AlertDialog.Builder(this)
+                .setTitle("Cheats")
+                .setItems(labels, (d, which) -> {
+                    if (which == 0) view.post(this::showCheatToggles);
+                    else if (which == 1) view.post(this::openCheatDatabase);
+                    else if (which == 2) view.post(this::showAddCheat);
+                    else if (which == 3) view.post(this::showDeleteCheats);
+                    else {
+                        for (Cheats.Cheat c : cheats) c.enabled = false;
+                        saveCheats();
+                        toast("Todos os cheats foram desativados.");
+                    }
+                }));
+    }
+
+    private String[] cheatNames(List<Cheats.Cheat> list) {
+        String[] out = new String[list.size()];
+        for (int i = 0; i < out.length; i++) out[i] = list.get(i).name;
+        return out;
+    }
+
+    private void showCheatToggles() {
+        if (cheats.isEmpty()) {
+            toast("Nenhum cheat salvo para este jogo. Use \"Buscar no banco\" ou \"Adicionar código\".");
+            return;
+        }
+        final boolean[] on = new boolean[cheats.size()];
+        for (int i = 0; i < on.length; i++) on[i] = cheats.get(i).enabled;
+        dialog(new AlertDialog.Builder(this)
+                .setTitle("Ativar / desativar")
+                .setMultiChoiceItems(cheatNames(cheats), on, (d, which, checked) -> on[which] = checked)
+                .setPositiveButton("Aplicar", (d, w) -> {
+                    for (int i = 0; i < on.length; i++) cheats.get(i).enabled = on[i];
+                    saveCheats();
+                    toast(Native.cheatsActiveCount() + " cheat(s) ativos.");
+                })
+                .setNegativeButton("Cancelar", null));
+    }
+
+    private void showDeleteCheats() {
+        if (cheats.isEmpty()) {
+            toast("Nenhum cheat salvo para este jogo.");
+            return;
+        }
+        final boolean[] del = new boolean[cheats.size()];
+        dialog(new AlertDialog.Builder(this)
+                .setTitle("Marque os cheats para apagar")
+                .setMultiChoiceItems(cheatNames(cheats), del, (d, which, checked) -> del[which] = checked)
+                .setPositiveButton("Apagar", (d, w) -> {
+                    List<Cheats.Cheat> keep = new ArrayList<>();
+                    for (int i = 0; i < del.length; i++) if (!del[i]) keep.add(cheats.get(i));
+                    cheats = keep;
+                    saveCheats();
+                })
+                .setNegativeButton("Cancelar", null));
+    }
+
+    private void showAddCheat() {
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        int pad = (int) (16 * getResources().getDisplayMetrics().density);
+        col.setPadding(pad, pad / 2, pad, 0);
+        final EditText name = new EditText(this);
+        name.setHint("Nome do cheat");
+        name.setSingleLine(true);
+        final EditText code = new EditText(this);
+        code.setHint("Código Action Replay\nEx.: 12345678 9ABCDEF0");
+        code.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS | InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
+        code.setMinLines(4);
+        col.addView(name);
+        col.addView(code);
+        dialog(new AlertDialog.Builder(this)
+                .setTitle("Adicionar código (Action Replay)")
+                .setView(col)
+                .setPositiveButton("Adicionar", (d, w) -> {
+                    String normalized = Cheats.normalizeCode(code.getText().toString());
+                    if (normalized == null) {
+                        toast("Código inválido: use pares de números hexadecimais de 8 dígitos.");
+                        return;
+                    }
+                    String n = name.getText().toString().trim();
+                    cheats.add(new Cheats.Cheat(n.isEmpty() ? "Cheat " + (cheats.size() + 1) : n, normalized, true));
+                    saveCheats();
+                    toast("Cheat adicionado e ativado.");
+                })
+                .setNegativeButton("Cancelar", null));
+    }
+
+    /** Opens the bundled database in the background (the first time it is copied out of the APK). */
+    private void openCheatDatabase() {
+        final AlertDialog progress = new AlertDialog.Builder(this)
+                .setMessage("Preparando o banco de cheats…").setCancelable(false).create();
+        modal(true);
+        progress.show();
+        new Thread(() -> {
+            String error = null;
+            try {
+                Cheats.openDatabase(this);
+            } catch (Exception e) {
+                error = e.getMessage();
+            }
+            final String message = error;
+            runOnUiThread(() -> {
+                progress.dismiss();
+                modal(false);
+                if (message != null) toast(message);
+                else showCheatSearch();
+            });
+        }, "cheat-db").start();
+    }
+
+    private void showCheatSearch() {
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        int pad = (int) (16 * getResources().getDisplayMetrics().density);
+        col.setPadding(pad, pad / 2, pad, 0);
+        final EditText query = new EditText(this);
+        query.setSingleLine(true);
+        query.setHint("Nome do jogo");
+        String initial = Cheats.queryFromFileName(new File(romPath).getName());
+        if (initial.replaceAll("[^A-Za-z]", "").length() < 3) initial = Native.romTitle().trim();
+        query.setText(initial);
+        TextView credit = new TextView(this);
+        credit.setText(Cheats.databaseSize() + " jogos · banco libretro-database (CC BY-SA 4.0)");
+        credit.setTextSize(11f);
+        final ListView results = new ListView(this);
+        final List<String> found = new ArrayList<>(Cheats.search(initial, 60));
+        final ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, found);
+        results.setAdapter(adapter);
+        col.addView(query);
+        col.addView(credit);
+        col.addView(results, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                (int) (getResources().getDisplayMetrics().heightPixels * 0.5f)));
+        query.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c) { }
+            @Override public void afterTextChanged(Editable s) {
+                found.clear();
+                found.addAll(Cheats.search(s.toString(), 60));
+                adapter.notifyDataSetChanged();
+            }
+        });
+        final AlertDialog[] box = new AlertDialog[1];
+        results.setOnItemClickListener((parent, v, position, id) -> {
+            String title = found.get(position);
+            box[0].dismiss();
+            view.post(() -> showDatabaseGame(title));
+        });
+        modal(true);
+        box[0] = new AlertDialog.Builder(this)
+                .setTitle("Escolha o jogo (confira a região)")
+                .setView(col)
+                .setNegativeButton("Fechar", null)
+                .create();
+        box[0].setOnDismissListener(x -> { modal(false); applyImmersive(); });
+        box[0].show();
+    }
+
+    private void showDatabaseGame(String title) {
+        final List<Cheats.Cheat> list;
+        try {
+            list = Cheats.read(title);
+        } catch (Exception e) {
+            toast("Não foi possível ler os cheats deste jogo.");
+            return;
+        }
+        if (list.isEmpty()) {
+            toast("Este jogo não tem cheats utilizáveis no banco.");
+            return;
+        }
+        final boolean[] pick = new boolean[list.size()];
+        dialog(new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setMultiChoiceItems(cheatNames(list), pick, (d, which, checked) -> pick[which] = checked)
+                .setPositiveButton("Adicionar e ativar", (d, w) -> {
+                    int added = 0;
+                    for (int i = 0; i < pick.length; i++) {
+                        if (!pick[i]) continue;
+                        Cheats.Cheat c = list.get(i);
+                        c.enabled = true;
+                        cheats.add(c);
+                        added++;
+                    }
+                    if (added == 0) return;
+                    saveCheats();
+                    toast(added + " cheat(s) adicionados. Se o jogo travar, desative-os no menu Cheats.");
                 })
                 .setNegativeButton("Cancelar", null));
     }
@@ -555,6 +777,8 @@ public class MainActivity extends Activity implements EmuView.Listener {
             romPath = path;
             prefs.edit().putString("last_rom", path).apply();
             view.setFastForward(false);
+            cheats = Cheats.load(baseDir, path);
+            Cheats.apply(cheats);
         } else {
             jitGuardArmed = false;
             clearCrashGuards();

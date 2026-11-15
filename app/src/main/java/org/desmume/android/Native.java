@@ -36,5 +36,9 @@ public final class Native {
     public static synchronized native boolean saveState(String path);
     public static synchronized native boolean loadState(String path);
     public static synchronized native void flushSaves();
+    public static synchronized native void cheatsClear();
+    public static synchronized native boolean cheatsAddActionReplay(String code, String description);
+    public static synchronized native int cheatsActiveCount();
+    public static synchronized native String romTitle();
     public static synchronized native void shutdown();
 }

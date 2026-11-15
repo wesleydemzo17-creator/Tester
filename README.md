@@ -47,6 +47,19 @@ O APK sai em `app/build/outputs/apk/release/`. Ele é assinado com a chave de de
 | Compilação | `-O3`, somente `arm64-v8a`, páginas de 16 KB suportadas. |
 | Avanço rápido | No menu, com o jogo aberto. |
 
+## Cheats
+
+MENU → **Cheats** (com um jogo aberto):
+
+- **Buscar no banco**: escolha o jogo na lista (a busca já vem preenchida com o nome do arquivo) e marque os cheats.
+- **Adicionar código manualmente**: códigos Action Replay, pares de números hexadecimais de 8 dígitos.
+- **Ativar / desativar** e **Apagar**. Os cheats ficam salvos por jogo e voltam a valer ao reabrir.
+
+O banco incluído vem do [libretro-database](https://github.com/libretro/libretro-database)
+(pasta `cht/Nintendo - Nintendo DS`, licença CC BY-SA 4.0): cerca de 4.200 jogos. O build baixa
+um commit fixado por `scripts/fetch_cheats.sh`. Cheats podem travar ou corromper o save de alguns
+jogos; faça um savestate antes de ativar.
+
 ## Limitações conhecidas
 
 - Somente aparelhos ARM de 64 bits, Android 8.0+.

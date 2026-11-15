@@ -27,6 +27,9 @@ jobs:
       - name: Fetch DeSmuME source (pinned commit)
         run: ./scripts/fetch_desmume.sh
 
+      - name: Fetch cheat database (libretro-database, pinned commit)
+        run: ./scripts/fetch_cheats.sh
+
       - name: Validate shaders
         run: |
           sudo apt-get update -qq

@@ -32,6 +32,7 @@
 #include "slot1.h"
 #include "slot2.h"
 #include "mc.h"
+#include "cheatSystem.h"
 #include "utils/colorspacehandler/colorspacehandler.h"
 #ifdef HAVE_JIT
 #include "arm_jit.h"
@@ -566,6 +567,71 @@ JNIFN(jboolean, loadState)(JNIEnv *env, jclass, jstring path)
 	bool ok = savestate_load(jstr(env, path).c_str());
 	g_audioFrames = 0;
 	return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+// ---------------------------------------------------------------------------
+// Cheats. The app keeps its own list per game and pushes the enabled ones here after loading a ROM
+// and after every change, so the core never needs to read or write its own cheat files.
+// ---------------------------------------------------------------------------
+JNIFN(void, cheatsClear)(JNIEnv *, jclass)
+{
+	if (cheats != NULL) cheats->clear();
+}
+
+// Adds an enabled Action Replay code. The code is any text holding pairs of 8-digit hex words
+// ("12345678 9ABCDEF0", one pair per line, or joined with '+' or spaces). Returns false if the
+// text is not a valid code.
+JNIFN(jboolean, cheatsAddActionReplay)(JNIEnv *env, jclass, jstring code, jstring description)
+{
+	if (cheats == NULL) return JNI_FALSE;
+	std::string raw = jstr(env, code);
+	std::string desc = jstr(env, description);
+
+	// Keep only complete 8-digit hex words and lay them out as "XXXXXXXX YYYYYYYY" lines.
+	std::vector<std::string> words;
+	std::string cur;
+	for (size_t i = 0; i <= raw.size(); i++)
+	{
+		const char c = (i < raw.size()) ? raw[i] : ' ';
+		if (isxdigit((unsigned char)c))
+		{
+			cur += (char)toupper((unsigned char)c);
+			continue;
+		}
+		if (cur.size() == 8) words.push_back(cur);
+		cur.clear();
+	}
+	if (words.empty() || (words.size() % 2) != 0 || words.size() / 2 > MAX_XX_CODE) return JNI_FALSE;
+
+	std::string lines;
+	for (size_t i = 0; i < words.size(); i += 2)
+		lines += words[i] + " " + words[i + 1] + "\n";
+
+	if (desc.size() > 1000) desc.resize(1000);
+	std::vector<char> codeBuf(lines.begin(), lines.end());
+	codeBuf.push_back(0);
+	std::vector<char> descBuf(desc.begin(), desc.end());
+	descBuf.push_back(0);
+	return cheats->add_AR(&codeBuf[0], &descBuf[0], true) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIFN(jint, cheatsActiveCount)(JNIEnv *, jclass)
+{
+	return (cheats != NULL) ? (jint)cheats->getActiveCount() : 0;
+}
+
+// 12-character title from the ROM header, e.g. for searching the cheat database.
+JNIFN(jstring, romTitle)(JNIEnv *env, jclass)
+{
+	if (!g_romLoaded) return env->NewStringUTF("");
+	char title[13];
+	memcpy(title, gameInfo.header.gameTile, 12);
+	title[12] = 0;
+	for (int i = 0; i < 12; i++)
+	{
+		if (title[i] != 0 && ((unsigned char)title[i] < 0x20 || (unsigned char)title[i] > 0x7E)) title[i] = ' ';
+	}
+	return env->NewStringUTF(title);
 }
 
 // Pushes pending battery-save (.dsv) writes to disk; call when the app goes to background.
