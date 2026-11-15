@@ -1,0 +1,65 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'org.mgba.android'
+    compileSdk 35
+    ndkVersion '27.2.12479018'
+
+    defaultConfig {
+        applicationId 'org.mgba.android.port'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '0.1-test'
+
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+        externalNativeBuild {
+            cmake {
+                arguments '-DANDROID_STL=c++_static',
+                          '-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON',
+                          '-DCMAKE_BUILD_TYPE=Release',
+                          "-DMGBA_SRC=${rootDir}/mgba-upstream"
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path 'src/main/cpp/CMakeLists.txt'
+            version '3.22.1'
+        }
+    }
+
+    buildTypes {
+        release {
+            // Optimised build signed with the debug key, so the APK installs directly for testing.
+            minifyEnabled false
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
+    }
+
+    androidResources {
+        // The cheat database is already a zip: store it as is so copying it out is fast.
+        noCompress += ['zip']
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging false
+        }
+    }
+}
