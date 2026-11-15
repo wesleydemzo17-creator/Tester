@@ -10,7 +10,7 @@
         android:isGame="true"
         android:appCategory="game"
         android:extractNativeLibs="false"
-        android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen">
+        android:theme="@style/Theme.DeSmuME">
 
         <activity
             android:name=".MainActivity"
