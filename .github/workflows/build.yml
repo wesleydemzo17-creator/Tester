@@ -42,6 +42,18 @@ jobs:
       - name: Build APK
         run: gradle --no-daemon :app:assembleRelease
 
+      - name: Check APK (signature, alignment, manifest)
+        run: |
+          set -x
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          ls -la app/build/outputs/apk/release/
+          for f in app/build/outputs/apk/release/*.apk; do
+            unzip -l "$f" | tail -3
+            "$BT"/apksigner verify --verbose --print-certs "$f" || true
+            "$BT"/zipalign -c -P 16 4 "$f" && echo ALIGN_OK || echo ALIGN_FAIL
+            "$BT"/aapt2 dump badging "$f" | head -20 || true
+          done
+
       - uses: actions/upload-artifact@v4
         with:
           name: desmume-android-apk
