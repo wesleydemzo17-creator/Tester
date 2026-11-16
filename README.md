@@ -1,24 +1,36 @@
-# DeSmuME para Android (port de teste)
+# DS + GBA para Android (port de teste)
 
-Port do núcleo oficial do DeSmuME ([TASEmulators/desmume](https://github.com/TASEmulators/desmume), GPL v2+) para Android, com uma ponte JNI e um app enxuto em Java.
+Um app só com dois núcleos oficiais:
 
-O código do DeSmuME **não** está neste repositório: `scripts/fetch_desmume.sh` baixa o commit fixado `40eafedd` do repositório oficial na hora do build. Nenhum arquivo do núcleo é modificado.
+- **Nintendo DS**: [DeSmuME](https://github.com/TASEmulators/desmume) (GPL v2+)
+- **Game Boy, Game Boy Color e Game Boy Advance**: [mGBA](https://github.com/mgba-emu/mgba) (MPL 2.0)
 
-## Como gerar o APK (pelo celular, sem PC)
+A tela inicial abre qualquer jogo (`.nds`, `.gba`, `.gb`, `.gbc`, soltos ou dentro de `.zip`, `.7z`
+ou `.rar`) e manda para o emulador certo. Abrir um jogo do outro sistema de dentro de um emulador
+também troca de emulador sozinho.
 
-1. Crie um repositório novo no GitHub e envie todo o conteúdo desta pasta (incluindo `.github/`).
-2. Abra a aba **Actions** → **Build APK** → **Run workflow** (ou faça um push na branch `main`).
-3. Quando terminar, abra a execução e baixe o artefato **desmume-android-apk**.
-4. Descompacte e instale o `app-release.apk` (permita "instalar apps desconhecidos").
+O código dos dois núcleos **não** está neste repositório: `scripts/fetch_desmume.sh` e
+`scripts/fetch_mgba.sh` baixam commits fixados dos repositórios oficiais na hora do build, sem
+modificar nada.
 
-## Como gerar no PC
+## Como baixar e instalar
+
+Cada push na branch `main` gera o APK e publica em **Releases → latest** como
+`ds-gba-emulador.apk`. Baixe esse arquivo direto no celular e toque nele para instalar
+(precisa de Android 8.0 ou mais novo, 64 bits).
+
+O mesmo APK também fica em Actions → artefato `ds-gba-apk`, mas ali ele vem dentro de um `.zip`
+que precisa ser extraído antes.
+
+No PC:
 
 ```bash
-./scripts/fetch_desmume.sh
+./scripts/fetch_desmume.sh && ./scripts/fetch_mgba.sh
+./scripts/fetch_cheats.sh && ./scripts/fetch_cheats_gb.sh
 gradle :app:assembleRelease     # Gradle 8.9+, JDK 17, Android SDK 35, NDK 27
 ```
 
-O APK sai em `app/build/outputs/apk/release/`. Ele é assinado com a chave de debug, só para testes.
+## Parte do Nintendo DS (DeSmuME)
 
 ## Uso
 
@@ -83,9 +95,10 @@ jogos; faça um savestate antes de ativar.
 ## Estrutura
 
 ```
-app/src/main/cpp/CMakeLists.txt   build do núcleo + ponte (também compila em Linux para testes)
-app/src/main/cpp/bridge.cpp       ponte JNI: vídeo, áudio, entrada, saves
-app/src/main/cpp/shim/            substitutos mínimos de glib e libpcap
+app/src/main/cpp/desmume/         núcleo do DS + ponte JNI (bridge.cpp) e substitutos de glib/libpcap
+app/src/main/cpp/mgba/            núcleo do GBA/GB + ponte JNI (bridge.c)
+app/src/main/java/org/emu/hub/    tela inicial, importação de jogos e escolha do emulador
+app/src/main/java/org/mgba/...    app do mGBA (controles, menus, cheats)
 app/src/main/java/...             Native, EmuView (controles, layout, loop), ScreenRenderer + Shaders (OpenGL), MainActivity (menu)
 tools/DumpShaders.java            usado no build para validar os shaders com glslangValidator
 .github/workflows/build.yml       gera o APK no GitHub Actions
@@ -93,4 +106,5 @@ tools/DumpShaders.java            usado no build para validar os shaders com gls
 
 ## Licença
 
-GPL v2 ou posterior, como o DeSmuME. Veja `LICENSE`.
+A parte do DeSmuME é GPL v2 ou posterior (veja `LICENSE`); o mGBA é MPL 2.0, compatível com a GPL.
+O banco de cheats vem do libretro-database (CC BY-SA 4.0).

@@ -6,12 +6,14 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  # "write" lets the workflow publish the APK as a release, so it can be downloaded directly
+  # as an .apk file (artifacts always come wrapped in a .zip).
+  contents: write
 
 jobs:
   apk:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -24,38 +26,56 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
-      - name: Fetch DeSmuME source (pinned commit)
-        run: ./scripts/fetch_desmume.sh
+      - name: Fetch DeSmuME and mGBA sources (pinned commits)
+        run: |
+          ./scripts/fetch_desmume.sh
+          ./scripts/fetch_mgba.sh
 
-      - name: Fetch cheat database (libretro-database, pinned commit)
-        run: ./scripts/fetch_cheats.sh
+      - name: Fetch cheat databases (libretro-database, pinned commit)
+        run: |
+          ./scripts/fetch_cheats.sh
+          ./scripts/fetch_cheats_gb.sh
 
       - name: Validate shaders
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq glslang-tools
-          mkdir -p /tmp/shaders
-          javac -d /tmp/shaders app/src/main/java/org/desmume/android/Shaders.java tools/DumpShaders.java
-          java -cp /tmp/shaders org.desmume.android.DumpShaders /tmp/shaders/out
-          for f in /tmp/shaders/out/*; do glslangValidator "$f"; done
+          for core in desmume mgba; do
+            out=/tmp/shaders-$core
+            mkdir -p $out
+            if [ $core = desmume ]; then tool=tools/DumpShaders.java; else tool=tools/mgba/DumpShaders.java; fi
+            javac -d $out app/src/main/java/org/$core/android/Shaders.java $tool
+            java -cp $out org.$core.android.DumpShaders $out/glsl
+            for f in $out/glsl/*; do glslangValidator "$f"; done
+          done
 
       - name: Build APK
         run: gradle --no-daemon :app:assembleRelease
 
       - name: Check APK (signature, alignment, manifest)
         run: |
-          set -x
           BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
-          ls -la app/build/outputs/apk/release/
-          for f in app/build/outputs/apk/release/*.apk; do
-            unzip -l "$f" | tail -3
-            "$BT"/apksigner verify --verbose --print-certs "$f" || true
-            "$BT"/zipalign -c -P 16 4 "$f" && echo ALIGN_OK || echo ALIGN_FAIL
-            "$BT"/aapt2 dump badging "$f" | head -20 || true
-          done
+          f=app/build/outputs/apk/release/app-release.apk
+          ls -la "$f"
+          unzip -l "$f" | grep -E "\.so$"
+          "$BT"/apksigner verify --verbose "$f" | head -4
+          "$BT"/zipalign -c -P 16 4 "$f" && echo "Alignment OK"
+          "$BT"/aapt2 dump badging "$f" | grep -E "^package|^minSdk|^targetSdk|^native-code|launchable"
+          mkdir -p out
+          cp "$f" out/ds-gba-emulador.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: desmume-android-apk
-          path: app/build/outputs/apk/release/*.apk
+          name: ds-gba-apk
+          path: out/ds-gba-emulador.apk
           if-no-files-found: error
+
+      - name: Publish as the "latest" release (direct .apk download)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest -y --cleanup-tag || true
+          gh release create latest out/ds-gba-emulador.apk \
+            --target "$GITHUB_SHA" --prerelease \
+            --title "Último build ($(date -u +%Y-%m-%d) · ${GITHUB_SHA::7})" \
+            --notes "APK de teste gerado automaticamente. Baixe ds-gba-emulador.apk direto no celular e toque para instalar."

@@ -8,11 +8,11 @@ android {
     ndkVersion '27.2.12479018'
 
     defaultConfig {
-        applicationId 'org.desmume.android.port'
+        applicationId 'org.emu.dsgba'
         minSdk 26
         targetSdk 35
-        versionCode 2
-        versionName '0.1-test'
+        versionCode 3
+        versionName '0.2-test'
 
         ndk {
             // 64-bit ARM only: that is where the ARM JIT and the NEON paths live.
@@ -22,7 +22,9 @@ android {
             cmake {
                 arguments '-DANDROID_STL=c++_static',
                           '-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON',
-                          "-DDESMUME_SRC=${rootDir}/desmume-upstream/desmume/src"
+                          '-DCMAKE_BUILD_TYPE=Release',
+                          "-DDESMUME_SRC=${rootDir}/desmume-upstream/desmume/src",
+                          "-DMGBA_SRC=${rootDir}/mgba-upstream"
             }
         }
     }

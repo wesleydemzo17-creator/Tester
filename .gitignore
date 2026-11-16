@@ -6,3 +6,5 @@ desmume-upstream/
 local.properties
 *.apk
 app/src/main/assets/cheats.zip
+mgba-upstream/
+app/src/main/assets/cheats_gb.zip

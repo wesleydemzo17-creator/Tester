@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.DeSmuME" parent="@android:style/Theme.Material.NoActionBar.Fullscreen">
+    <style name="Theme.Emu" parent="@android:style/Theme.Material.NoActionBar.Fullscreen">
         <item name="android:windowBackground">@android:color/black</item>
     </style>
+    <!-- Launcher screen: a normal dark window with the system bars visible. -->
+    <style name="Theme.Hub" parent="@android:style/Theme.Material.NoActionBar" />
 </resources>

@@ -1,4 +1,4 @@
-package org.desmume.android;
+package org.emu.hub;
 
 import com.github.junrar.Archive;
 import com.github.junrar.rarfile.FileHeader;
@@ -25,13 +25,16 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
 /**
- * Turns a file the user picked into a .nds file inside the app's ROM folder.
- * Accepts a plain .nds, or a ZIP, 7z or RAR archive that contains one.
+ * Turns a file the user picked into a game file inside the app's ROM folder.
+ * Accepts a plain ROM (.nds, .gba, .gb, .gbc, .sgb) or a ZIP, 7z or RAR archive that holds one.
  */
-final class RomImporter {
+public final class RomImporter {
+
+    /** File name endings of every game the app can run. */
+    public static final String[] ROM_EXTENSIONS = {".nds", ".gba", ".gb", ".gbc", ".sgb"};
 
     /** Failure with a message that can be shown to the user. */
-    static final class ImportException extends Exception {
+    public static final class ImportException extends Exception {
         ImportException(String message) { super(message); }
     }
 
@@ -43,19 +46,20 @@ final class RomImporter {
      * @param picked      temporary copy of the picked file (deleted or moved by this call)
      * @param displayName the name the file had where the user picked it
      * @param romsDir     destination folder
-     * @return the .nds file ready to be loaded
+     * @return the game file ready to be loaded
      */
-    static File importFile(File picked, String displayName, File romsDir) throws ImportException {
+    public static File importFile(File picked, String displayName, File romsDir) throws ImportException {
         try {
             int kind = sniff(picked);
             if (kind == 0) {
-                if (!displayName.toLowerCase(Locale.ROOT).endsWith(".nds")) {
-                    throw new ImportException("Formato não reconhecido. Use .nds, .zip, .7z ou .rar.");
+                if (!isRomName(displayName)) {
+                    throw new ImportException("Formato não reconhecido. Use .nds, .gba, .gb, .gbc, "
+                            + "ou um .zip, .7z ou .rar com um deles dentro.");
                 }
                 return moveInto(picked, new File(romsDir, clean(displayName)));
             }
             File rom = extract(picked, kind, romsDir);
-            if (rom == null) throw new ImportException("Nenhum arquivo .nds encontrado dentro do arquivo compactado.");
+            if (rom == null) throw new ImportException("Nenhum jogo (.nds, .gba, .gb, .gbc) encontrado dentro do arquivo compactado.");
             return rom;
         } finally {
             picked.delete(); // no-op if it was moved
@@ -80,7 +84,7 @@ final class RomImporter {
         boolean password = false;
         for (Extractor e : order) {
             try {
-                return e.run(); // null = opened fine but holds no .nds; no point in trying another engine
+                return e.run(); // null = opened fine but holds no game; no point in trying another engine
             } catch (ImportException ex) {
                 throw ex;
             } catch (Throwable ex) { // includes a missing native library
@@ -93,7 +97,7 @@ final class RomImporter {
         }
         if (password) throw new ImportException("Arquivo protegido por senha não é suportado.");
         throw new ImportException("Não foi possível abrir o arquivo compactado. Ele pode estar incompleto "
-                + "ou corrompido; tente baixar de novo ou descompactar em outro app e abrir o .nds.\n\n"
+                + "ou corrompido; tente baixar de novo ou descompactar em outro app e abrir o jogo direto.\n\n"
                 + "Detalhes técnicos:\n" + details);
     }
 
@@ -157,8 +161,11 @@ final class RomImporter {
         return 0;
     }
 
-    private static boolean isRomName(String entryName) {
-        return entryName != null && entryName.toLowerCase(Locale.ROOT).endsWith(".nds");
+    public static boolean isRomName(String entryName) {
+        if (entryName == null) return false;
+        String n = entryName.toLowerCase(Locale.ROOT);
+        for (String e : ROM_EXTENSIONS) if (n.endsWith(e)) return true;
+        return false;
     }
 
     /** Drops any folder part and characters that are unsafe in file names. */

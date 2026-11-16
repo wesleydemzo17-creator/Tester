@@ -27,6 +27,9 @@ import android.widget.ListView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import org.emu.hub.GameRouter;
+import org.emu.hub.RomImporter;
+
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
@@ -92,6 +95,23 @@ public class MainActivity extends Activity implements EmuView.Listener {
         applySettings();
         if (Native.romLoaded()) romPath = prefs.getString("last_rom", null);
         view.start();
+        openFromIntent(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        openFromIntent(intent);
+    }
+
+    /** The launcher (or the other emulator) passes the game to open in the intent. */
+    private void openFromIntent(Intent intent) {
+        String path = intent != null ? intent.getStringExtra(GameRouter.EXTRA_ROM) : null;
+        if (path == null || !coreReady) return;
+        intent.removeExtra(GameRouter.EXTRA_ROM); // do not reopen it if the activity is recreated
+        if (path.equals(romPath) && Native.romLoaded()) return;
+        loadRom(path);
     }
 
     @Override
@@ -280,7 +300,7 @@ public class MainActivity extends Activity implements EmuView.Listener {
         final ArrayList<String> labels = new ArrayList<>();
         final ArrayList<Runnable> actions = new ArrayList<>();
 
-        labels.add("Abrir ROM (.nds, .zip, .7z, .rar)");
+        labels.add("Abrir jogo (DS, GBA, GB, GBC; .zip, .7z, .rar)");
         actions.add(this::pickRom);
         if (!loaded && last != null && new File(last).exists()) {
             labels.add("Continuar: " + new File(last).getName());
@@ -870,7 +890,15 @@ public class MainActivity extends Activity implements EmuView.Listener {
             final String message = error;
             runOnUiThread(() -> {
                 progress.dismiss();
-                if (result != null) {
+                if (result != null && !GameRouter.isDs(result)) {
+                    // A Game Boy / Advance game: hand it to mGBA and close this emulator.
+                    if (Native.romLoaded()) {
+                        Native.flushSaves();
+                        Native.closeRom();
+                    }
+                    GameRouter.open(MainActivity.this, result);
+                } else if (result != null) {
+                    GameRouter.remember(MainActivity.this, result);
                     loadRom(result.getAbsolutePath());
                 } else {
                     // A dialog, not a toast: the text can be long and the user may need to copy it.
