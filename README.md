@@ -31,6 +31,8 @@ Funciona com **cartucho original, R4/flashcart, DSi/3DS (TWiLight)** e **emulado
 | `android/app/src/main/java/br/pokebank/net/` | Protocolo e servidor (UDP de descoberta + TCP). Puro Kotlin. |
 | `PROTOCOL.md` | Descrição byte a byte do protocolo, para você criar outros clientes. |
 | `BATTLES.md` | Plano de trocas ao vivo e batalhas DS ↔ Android. |
+| `WFC.md` | **Servidor WFC próprio no celular (root)**: batalhas e trocas reais do jogo entre DS e melonDS. |
+| `android/.../wfc/` | O servidor: DNS, NAS, GPCM, GPSP (porte do AltWFC). |
 
 ## Como compilar
 
@@ -120,7 +122,7 @@ roteador do celular sem senha). **DSi** aceita WPA2. A conexão é a salva nas c
 
 ## Testado até aqui
 
-- 20 testes de unidade, entre eles: criptografia PK4 com arquivos reais, status conferidos com o
+- 25 testes de unidade (incluindo o servidor WFC: DNS, NAS, GPCM com dois DS simulados), entre eles: criptografia PK4 com arquivos reais, status conferidos com o
   exemplo da Bulbapedia (Garchomp), party, treinador e Pokédex, formatos de emulador, e
   decodificação de sprites validada contra o **nitrogfx** da pret nos dois modos de criptografia.
 - Ponta a ponta (servidor real ↔ simulador do DS): gravação, cancelamento, chip com defeito e
@@ -134,5 +136,6 @@ roteador do celular sem senha). **DSi** aceita WPA2. A conexão é a salva nas c
 - Layouts do save, criptografia PK4, tabela de caracteres, nomes de espécies e curvas de experiência
   foram conferidos e extraídos do **PKHeX** (https://github.com/kwsch/PKHeX, GPLv3). Por isso este
   projeto deve ser distribuído sob a **GPLv3**.
+- O servidor WFC (`wfc/`) é um porte do **AltWFC** (AGPLv3). Com ele, o projeto como um todo passa a seguir a **AGPLv3** (compatível com a GPLv3).
 - Exemplos e bibliotecas do devkitPro: https://github.com/devkitPro/nds-examples.
 - Pokémon é marca da Nintendo/Game Freak/The Pokémon Company. Projeto de fã, sem fins comerciais.

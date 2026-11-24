@@ -59,7 +59,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private val TABS = listOf("Caixas", "Equipe", "Banco", "Pokedex", "Treinador", "Registro")
+private val TABS = listOf("Caixas", "Equipe", "Banco", "Pokedex", "Treinador", "Servidor WFC", "Registro")
 
 private fun displayName(uri: Uri): String = uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':') ?: "save"
 
@@ -96,6 +96,7 @@ fun App(vm: BankViewModel) {
                 2 -> BankTab(vm)
                 3 -> PokedexTab(vm)
                 4 -> TrainerTab(vm)
+                5 -> WfcTab(vm)
                 else -> LogTab(vm)
             }
         }
