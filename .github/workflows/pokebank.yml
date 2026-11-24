@@ -3,7 +3,7 @@
 #   - app-debug.apk (Android SDK do proprio runner do GitHub)
 # Os arquivos ficam em Actions > (execucao) > Artifacts.
 # Ao criar uma tag v* (ex.: v1.0), tambem publica uma Release com os dois arquivos.
-name: build
+name: PokeBank
 
 on:
   push:
@@ -53,6 +53,28 @@ jobs:
         with:
           name: pokebank-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
+
+  # Guarda os arquivos compilados na branch "pokebank-builds" (facil de baixar e de achar).
+  publicar:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/pokebank'
+    needs: [nds, apk]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+      - name: Enviar para a branch pokebank-builds
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir pub && cd pub
+          cp ../out/pokebank-nds/pokebank.nds ../out/pokebank-apk/app-debug.apk .
+          mv app-debug.apk pokebank.apk
+          printf 'Compilado de %s em %s\n' "${{ github.sha }}" "$(date -u)" > BUILD.txt
+          git init -q -b pokebank-builds
+          git config user.name github-actions && git config user.email github-actions@users.noreply.github.com
+          git add . && git commit -q -m "Build ${{ github.sha }}"
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}" pokebank-builds
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
