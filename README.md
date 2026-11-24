@@ -5,7 +5,8 @@ por Wi‑Fi com um app Android. No celular você vê as 18 caixas do PC, **depos
 do celular e **retira** de volta, para o mesmo cartucho ou para outro (o que na prática é uma troca
 entre cartuchos).
 
-Jogos suportados: **Diamond, Pearl, Platinum, HeartGold e SoulSilver** (4ª geração, save flash de 512 KB).
+Jogos suportados: **Diamond, Pearl, Platinum, HeartGold e SoulSilver** (4ª geração, save de 512 KB).
+Funciona com **cartucho original, R4/flashcart, DSi/3DS (TWiLight)** e **emuladores no celular**.
 
 ```
  Nintendo DS (PokeBank DS)            Android (app PokeBank)
@@ -29,6 +30,7 @@ Jogos suportados: **Diamond, Pearl, Platinum, HeartGold e SoulSilver** (4ª gera
 | `android/app/src/main/java/br/pokebank/core/` | Núcleo: criptografia PK4, layout do save Gen 4, CRC, banco. Puro Kotlin, sem Android. |
 | `android/app/src/main/java/br/pokebank/net/` | Protocolo e servidor (UDP de descoberta + TCP). Puro Kotlin. |
 | `PROTOCOL.md` | Descrição byte a byte do protocolo, para você criar outros clientes. |
+| `BATTLES.md` | Plano de trocas ao vivo e batalhas DS ↔ Android. |
 
 ## Como compilar
 
@@ -56,59 +58,79 @@ chip com defeito, use `PB_FAIL_SECTOR=0x40000`.
 
 ## Como usar
 
-1. **Rede.** O DS precisa de Wi‑Fi de 2,4 GHz.
-   - **DS / DS Lite:** só conecta em redes **abertas ou WEP**. Use o roteador do celular sem senha
-     (muitos Androids permitem "Segurança: nenhuma") ou um roteador antigo.
-   - **DSi / 3DS em modo DSi:** aceita WPA2.
-   - Configure a conexão uma vez em "Nintendo WFC Settings", no menu de um jogo Pokémon, ou nas
-     configurações de internet do DSi. O PokeBank DS usa essa configuração salva.
-2. Abra o app **PokeBank** no celular. Ele mostra o IP e fica esperando.
-3. Inicie o **PokeBank DS** pelo flashcart ou pelo TWiLight Menu++.
-   - **DS Lite com flashcart no Slot‑1:** depois que o programa abrir, ele pede para você trocar o
-     cartão. Tire o flashcart e coloque o cartucho Pokémon. É a mesma técnica de ferramentas de
-     backup de save; faça por sua conta e risco.
-   - **DSi / 3DS rodando pelo cartão SD:** é só deixar o cartucho Pokémon no Slot‑1.
-4. O DS lê o save, acha o celular sozinho (ou aperte **Y** para digitar o IP) e envia o save.
-   O celular faz **backup automático** em `Android/data/br.pokebank/files/bank/backups/`.
-5. No celular:
-   - **Aba Cartucho:** toque num Pokémon e escolha "Depositar no banco".
-   - **Aba Banco:** toque num Pokémon e escolha "Retirar para o cartucho".
-6. Toque em **Gravar no DS**. O DS mostra o resumo e pede **A**, depois **segurar R + A**.
-   Ele grava só os setores que mudaram, lê tudo de volta e confere.
-7. Só depois da confirmação do DS o banco do celular é atualizado.
+### 1. Imagens dos Pokémon (uma vez só)
+
+No app, toque em **Sprites da ROM** e escolha o arquivo `.nds` do seu jogo (Diamond, Pearl,
+Platinum, HeartGold ou SoulSilver). O app extrai do próprio jogo as imagens dos 493 Pokémon (normal,
+shiny e versões fêmea) e guarda no celular. Nenhuma imagem vem embutida no app.
+
+### 2. Abrir um save — três jeitos
+
+**a) R4 / flashcart (o mais comum)**
+1. Jogue, **salve no jogo** e volte ao menu do R4. Alguns kernels só gravam o `.sav` no microSD nessa hora.
+2. Abra o `pokebank.nds` pelo R4 e escolha **A = arquivo .sav no cartão**.
+3. Ele procura os `.sav` de 512 KB no cartão; escolha o do Pokémon com as setas e **A**.
+
+**b) DSi / 3DS (TWiLight Menu++ ou nds-bootstrap)**
+- O mesmo menu **A**: ele procura no SD do console (`sd:/`, ex.: `sd:/roms/nds/saves/`) e no flashcart (`fat:/`).
+- No DSi o Wi‑Fi aceita **WPA2** (configure em Configurações do DSi > Internet).
+
+**c) Cartucho original no Slot‑1**
+- Escolha **B = cartucho original**. No DS Lite com flashcart, troque o cartão quando ele pedir.
+
+Nos três casos o DS acha o celular sozinho (ou aperte **Y** para digitar o IP) e envia o save.
+
+**d) Emulador no celular (melonDS, DraStic)**
+- No app, toque em **Abrir save** e escolha o `.sav` (melonDS) ou `.dsv` (DraStic).
+- **Feche o jogo no emulador antes**, e abra de novo depois de salvar.
+
+### 3. Usar
+
+- **Caixas:** as 18 caixas, com as imagens. Toque para ver a ficha completa e depositar no banco.
+- **Equipe:** os 6 da party, com HP e status calculados pelo jogo (somente leitura).
+- **Banco:** os Pokémon guardados no celular (`.pk4`, abrem no PKHeX). Toque para retirar para o save aberto.
+- **Pokédex:** os 493, com capturado/visto do seu save, quantos você tem, busca e filtros.
+- **Treinador:** nome, ID, dinheiro, insígnias, tempo de jogo, Pokédex, e exportar a equipe para o Pokémon Showdown.
+- Para gravar: **Gravar no DS** (confirme no DS com A e depois R+A) ou **Salvar no arquivo** (emulador).
+
+Na ficha de cada Pokémon: natureza, habilidade, item, IVs, EVs, status, golpes e PP, treinador
+original, local e data de captura, Pokébola, Pokérus, fitas, Poder Oculto e os dados base da espécie.
+
+### Rede
+
+O DS precisa de Wi‑Fi de 2,4 GHz. **DS / DS Lite** só conectam em redes **abertas ou WEP** (use o
+roteador do celular sem senha). **DSi** aceita WPA2. A conexão é a salva nas configurações do console
+("Nintendo WFC Settings" num jogo Pokémon, ou Configurações do DSi).
 
 ## Segurança do save
 
-- Todo save recebido vira um backup antes de qualquer outra coisa.
-- O app só altera o bloco das caixas (Storage) e recalcula o checksum dele, como o PKHeX faz.
-- O DS grava setor por setor, confere cada um, e se algo falhar **regrava o save original**.
-- Depósitos enviados ficam num diário (`bank/pending`). Se o app fechar no meio de uma gravação, ele
-  avisa e deixa você recuperar esses Pokémon.
-- Pokémon com itens ou formas que não existem no jogo de destino são bloqueados (por exemplo,
-  Giratina Origem ou um item de HGSS indo para Diamond/Pearl).
-- **Teste primeiro com um cartucho cujo save você já copiou por outro meio.**
+- Todo save recebido vira backup no celular antes de qualquer coisa.
+- No modo arquivo, o DS também cria `<nome>.sav.bak` no cartão antes de gravar.
+- Só o bloco das caixas é alterado (com o checksum recalculado, como o PKHeX faz). Rodapés de emulador
+  e bytes extras do arquivo são preservados.
+- O DS confere tudo lendo de volta; se algo falhar, regrava o original.
+- Depósitos enviados ficam num diário até a confirmação; se o app fechar no meio, ele avisa.
+- Itens e formas que não existem no jogo de destino são bloqueados.
 
-## Limitações desta versão (v1)
+## Limitações desta versão
 
-- Só as caixas do PC, sem a party (Pokémon da party têm estatísticas calculadas que precisariam ser geradas).
-- **Cartuchos com infravermelho (HeartGold/SoulSilver):** o acesso ao chip de save por trás do IR é
-  experimental. A leitura é validada pelo celular (o save só é aceito se os rodapés e checksums
-  baterem), então teste a leitura antes de gravar.
-- O app não verifica legalidade (não é um PKHeX). Ele move os Pokémon byte a byte, sem alterar nada.
-- A tela do DS usa a fonte padrão, sem acentos.
+- Equipe só para leitura; trocas passam pelo banco (troca ao vivo e batalhas: veja `BATTLES.md`).
+- Cartuchos com infravermelho (HG/SS) no Slot‑1: acesso ao chip experimental (no R4 isso não existe: é arquivo).
+- Textos do jogo (golpes, itens etc.) em inglês, como nos cartuchos ocidentais.
 
-## Testado até aqui (sem hardware)
+## Testado até aqui
 
-- Testes de unidade do núcleo com arquivos `.pk4` reais dos testes do PKHeX: checksum, nomes
-  (inclusive japonês), ovos, criptografia nas 32 ordens de blocos, detecção de DP/Pt/HGSS e da
-  partição ativa, e o ciclo depositar → gravar → retirar.
-- Ponta a ponta: o servidor Kotlin real conversando com o simulador do DS nos cenários de gravação
-  normal, cancelamento no DS e chip com defeito (com restauração do original).
-- O código do DS foi checado (tipos e sintaxe) contra os headers reais da libnds, do calico e do
-  dswifi. **Ainda não foi compilado com o devkitARM nem rodado num console**: esse é o próximo passo, com você.
+- 20 testes de unidade, entre eles: criptografia PK4 com arquivos reais, status conferidos com o
+  exemplo da Bulbapedia (Garchomp), party, treinador e Pokédex, formatos de emulador, e
+  decodificação de sprites validada contra o **nitrogfx** da pret nos dois modos de criptografia.
+- Ponta a ponta (servidor real ↔ simulador do DS): gravação, cancelamento, chip com defeito e
+  **modo arquivo** (`.sav` com rodapé preservado e `.bak` criado).
+- O `.nds` e o APK são compilados no GitHub Actions a cada envio.
+- **Ainda não testado em console nem celular de verdade.**
 
 ## Créditos e licença
 
+- Caminhos e criptografia dos sprites conferidos nos projetos de decompilação da **pret** (pokeplatinum, pokeheartgold) e validados com o **nitrogfx**.
 - Layouts do save, criptografia PK4, tabela de caracteres, nomes de espécies e curvas de experiência
   foram conferidos e extraídos do **PKHeX** (https://github.com/kwsch/PKHeX, GPLv3). Por isso este
   projeto deve ser distribuído sob a **GPLv3**.

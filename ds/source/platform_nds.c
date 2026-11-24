@@ -3,6 +3,7 @@
 
 #include <nds.h>
 #include <dswifi9.h>
+#include <fat.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -108,6 +109,23 @@ void plat_set_nonblocking(int s, bool on) {
 }
 
 bool plat_would_block(void) { return errno == EWOULDBLOCK || errno == EAGAIN || errno == EINPROGRESS; }
+
+// ---------------------------------------------------------------- cartao de memoria
+
+static int s_fat = -1;
+
+bool plat_fs_init(void) {
+    // Monta "fat:/" (flashcart/R4 via DLDI) e, no modo DSi, "sd:/" (SD interno).
+    if (s_fat < 0) s_fat = fatInitDefault() ? 1 : 0;
+    return s_fat == 1;
+}
+
+int plat_storage_roots(const char** roots, int max) {
+    int n = 0;
+    if (isDSiMode() && n < max) roots[n++] = "sd:/";
+    if (n < max) roots[n++] = "fat:/";
+    return n;
+}
 
 // ---------------------------------------------------------------- cartucho
 

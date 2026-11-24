@@ -20,7 +20,10 @@ fun main(args: Array<String>) {
     val leafeon = Pk4(TestSaves.res("leafeon.pk4"))
     val g = Gen4Game.PT
     val original = TestSaves.build(g) { b, s -> System.arraycopy(leafeon.encrypt(), 0, b, s + g.boxOffset(0), 136) }
-    val sav = File(work, "cart.sav").apply { writeBytes(original) }
+    val sdDir = File(work, "sd/roms/nds/saves").apply { mkdirs() }
+    val footer = "|<--Snip above here to create a raw sav by excluding this DeSmuME savedata footer:".toByteArray().copyOf(122)
+    val sav = if (scenario == "file") File(sdDir, "Pokemon Platinum.sav").apply { writeBytes(original + footer) }
+              else File(work, "cart.sav").apply { writeBytes(original) }
     val bank = BankStore(File(work, "bank"))
     var session: BankSession? = null
     var pendingWrite: ByteArray? = null
@@ -51,16 +54,18 @@ fun main(args: Array<String>) {
     }, tcpPort = 47101, udpPort = 47100)
     server.start()
 
-    val keys = when (scenario) { "cancel" -> "A,B"; else -> "A,RA" }
+    // 1a tecla: menu (B = cartucho, A = arquivo .sav); "file" usa a pasta work/sd como microSD
+    val keys = when (scenario) { "cancel" -> "B,A,B"; "file" -> "A,A,A,RA"; else -> "B,A,RA" }
     val pb = ProcessBuilder(hostBin, sav.absolutePath).inheritIO()
-    pb.environment().putAll(mapOf("PB_SERVER" to "127.0.0.1", "PB_KEYS" to keys, "PB_EXIT_AFTER" to "1"))
+    pb.environment().putAll(mapOf("PB_SERVER" to "127.0.0.1", "PB_KEYS" to keys, "PB_EXIT_AFTER" to "1",
+        "PB_SD_ROOT" to File(work, "sd").absolutePath))
     if (scenario == "fail") pb.environment()["PB_FAIL_SECTOR"] = "0x40000"
     val proc = pb.start()
     val ok = done.await(60, TimeUnit.SECONDS)
     proc.waitFor(20, TimeUnit.SECONDS)
     server.stop()
 
-    val cart = Gen4Save(sav.readBytes())
+    val cart = Gen4Save(sav.readBytes().copyOf(Gen4Save.SAVE_SIZE))
     val slot = cart.getBoxSlot(0, 0)
     val inBank = bank.list().map { it.pk }
     println("---- verificacao ($scenario) ----")
@@ -68,6 +73,10 @@ fun main(args: Array<String>) {
     println("cartucho: slot1=${slot?.displayName ?: "vazio"}, checksums ok=${cart.generalChecksumValid && cart.storageChecksumValid}")
     println("banco: ${inBank.map { it.displayName }}  pendentes=${bank.pendingCount()}")
     val pass = when (scenario) {
+        "file" -> result == Protocol.WR_OK && slot == null && inBank == listOf(leafeon) && cart.storageChecksumValid &&
+            sav.length() == (Gen4Save.SAVE_SIZE + 122).toLong() &&
+            sav.readBytes().copyOfRange(Gen4Save.SAVE_SIZE, Gen4Save.SAVE_SIZE + 122).contentEquals(footer) &&
+            File(sav.path + ".bak").readBytes().contentEquals(original + footer)
         "ok" -> result == Protocol.WR_OK && slot == null && inBank == listOf(leafeon) && cart.storageChecksumValid && bank.pendingCount() == 0
         "cancel" -> result == Protocol.WR_CANCELLED && slot == leafeon && inBank.isEmpty() && sav.readBytes().contentEquals(original)
         "fail" -> result == Protocol.WR_FAILED_RESTORED && slot == leafeon && inBank.isEmpty() && sav.readBytes().contentEquals(original)

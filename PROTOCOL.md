@@ -26,7 +26,7 @@ offset  tamanho  campo
 
 | Tipo | Nome | Direção | Payload |
 |---|---|---|---|
-| 0x01 | HELLO | DS → A | versão u8, tipo do chip u8 (3 = flash), reservado u16, tamanho do save u32, código do jogo [4], título [12], cartão IR u8 |
+| 0x01 | HELLO | DS → A | versão u8, tipo do chip u8 (3 = flash, 0 = arquivo), reservado u16, tamanho do save u32, código do jogo [4] (`FILE` no modo arquivo .sav), título [12] (nome do arquivo no modo arquivo), cartão IR u8 |
 | 0x02 | HELLO_ACK | A → DS | versão u8 + nome do servidor (ASCII) |
 | 0x03 | SAVE_DATA | DS → A | CRC32 do save u32 + save inteiro |
 | 0x04 | MESSAGE | A → DS | texto ASCII para o DS mostrar |

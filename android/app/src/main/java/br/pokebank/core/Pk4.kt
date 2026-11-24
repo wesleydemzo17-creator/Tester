@@ -157,6 +157,25 @@ class Pk4(data: ByteArray) {
             return Pk4(buf)
         }
 
+        /** Descriptografa um Pokemon da party (236 bytes): 136 de dados + 100 de status em batalha. */
+        fun decryptParty(encrypted: ByteArray, offset: Int): Pair<Pk4, PartyStats> {
+            val pk = decrypt(encrypted, offset)
+            val ext = encrypted.copyOfRange(offset, offset + PARTY_SIZE)
+            // os 100 bytes extras sao criptografados com a PID como semente
+            var seed = pk.pid
+            var i = SIZE
+            while (i < PARTY_SIZE) {
+                seed = (0x41C64E6DL * seed + 0x6073L) and 0xFFFFFFFFL
+                ext.put16(i, ext.u16(i) xor ((seed ushr 16).toInt() and 0xFFFF))
+                i += 2
+            }
+            val stats = PartyStats(
+                level = ext.u8(0x8C), hpCurrent = ext.u16(0x8E),
+                stats = IntArray(6) { ext.u16(0x90 + it * 2) }, status = ext.u32(0x88),
+            )
+            return pk to stats
+        }
+
         /** Slot vazio, exatamente como o PKHeX grava (blank criptografado). */
         fun emptyEncrypted(): ByteArray = Pk4(ByteArray(SIZE)).encrypt()
     }

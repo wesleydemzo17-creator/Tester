@@ -14,10 +14,12 @@ enum class Gen4Game(
     val storageStart: Int,
     val footerSize: Int,
     val trainerOffset: Int,
+    val partyOffset: Int,
+    val dexOffset: Int,
 ) {
-    DP("Diamond/Pearl", 0xC100, 0x121E0, 0xC100, 0x14, 0x64),
-    PT("Platinum", 0xCF2C, 0x121E4, 0xCF2C, 0x14, 0x68),
-    HGSS("HeartGold/SoulSilver", 0xF628, 0x12310, 0xF700, 0x10, 0x64);
+    DP("Diamond/Pearl", 0xC100, 0x121E0, 0xC100, 0x14, 0x64, 0x98, 0x12DC),
+    PT("Platinum", 0xCF2C, 0x121E4, 0xCF2C, 0x14, 0x68, 0xA0, 0x1328),
+    HGSS("HeartGold/SoulSilver", 0xF628, 0x12310, 0xF700, 0x10, 0x64, 0x98, 0x12B8);
 
     fun boxOffset(box: Int): Int = if (this == HGSS) box * 0x1000 else 4 + box * 0xFF0
     fun boxNameOffset(box: Int): Int = if (this == HGSS) 0x12008 + box * 40 else 4 + 18 * 0xFF0 + box * 40
@@ -41,6 +43,39 @@ class Gen4Save(raw: ByteArray) {
     val trainerName: String get() = Gen4Text.decode(data, generalOffset + game.trainerOffset, 16)
     val trainerId: Int get() = data.u16(generalOffset + game.trainerOffset + 0x10)
     val secretId: Int get() = data.u16(generalOffset + game.trainerOffset + 0x12)
+
+    private val t: Int get() = generalOffset + game.trainerOffset
+    val money: Long get() = data.u32(t + 0x14)
+    val trainerGender: Int get() = data.u8(t + 0x18)
+    /** Insignias: DPPt = 8 bits; HGSS = Johto (8 bits) + Kanto (8 bits). */
+    val badgeCount: Int get() = Integer.bitCount(data.u8(t + 0x1A)) + if (game == Gen4Game.HGSS) Integer.bitCount(data.u8(t + 0x1F)) else 0
+    val coins: Int get() = data.u16(t + 0x20)
+    val playTime: String get() = "%d:%02d:%02d".format(data.u16(t + 0x22), data.u8(t + 0x24), data.u8(t + 0x25))
+    val nationalDex: Boolean get() = data.u8(t + 0x1D) and 2 != 0
+
+    /** Party (somente leitura nesta versao). */
+    val party: List<Pair<Pk4, PartyStats>>
+        get() {
+            val base = generalOffset + game.partyOffset
+            val count = data.u8(base - 4).coerceIn(0, 6)
+            return (0 until count).mapNotNull { i ->
+                Pk4.decryptParty(data, base + i * Pk4.PARTY_SIZE).takeIf { !it.first.isEmpty }
+            }
+        }
+
+    private fun dexFlag(region: Int, species: Int): Boolean {
+        val idx = species - 1
+        val o = generalOffset + game.dexOffset + 4 + region * 0x40 + (idx shr 3)
+        return (data.u8(o) shr (idx and 7)) and 1 == 1
+    }
+    fun dexCaught(species: Int) = species in 1..SpeciesInfo.MAX_SPECIES && dexFlag(0, species)
+    fun dexSeen(species: Int) = species in 1..SpeciesInfo.MAX_SPECIES && dexFlag(1, species)
+    val dexCaughtCount: Int get() = (1..SpeciesInfo.MAX_SPECIES).count { dexCaught(it) }
+    val dexSeenCount: Int get() = (1..SpeciesInfo.MAX_SPECIES).count { dexSeen(it) }
+
+    /** Todos os Pokemon das caixas, com posicao. */
+    fun allBoxMons(): List<Triple<Int, Int, Pk4>> =
+        (0 until BOXES).flatMap { b -> (0 until SLOTS).mapNotNull { s -> getBoxSlot(b, s)?.let { Triple(b, s, it) } } }
 
     val generalChecksumValid: Boolean get() = blockValid(generalOffset, game.generalSize, game.footerSize)
     val storageChecksumValid: Boolean get() = blockValid(storageOffset, game.storageSize, game.footerSize)

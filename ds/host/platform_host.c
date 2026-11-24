@@ -5,10 +5,12 @@
 //
 // Variaveis de ambiente:
 //   PB_SERVER=127.0.0.1    para onde mandar a descoberta (padrao: 255.255.255.255)
-//   PB_KEYS="A,RA"         botoes entregues nas telas de confirmacao (as que tem '?').
+//   PB_KEYS="B,A,RA"       botoes entregues nas telas de escolha/confirmacao (as que tem '?'
+//                          ou "Escolha"). O 1o responde o menu: A = arquivo .sav, B = cartucho.
 //                          "A" = aperta A, "RA" = segura R e aperta A, "B" = cancela.
 //   PB_EXIT_AFTER=1        encerra depois de N resultados de gravacao
 //   PB_FAIL_SECTOR=0x40000 simula defeito: programar neste setor falha
+//   PB_SD_ROOT=/pasta      pasta que faz o papel do microSD (modo arquivo .sav)
 #include "../source/platform.h"
 
 #include <arpa/inet.h>
@@ -75,7 +77,7 @@ void plat_status(const char* fmt, ...) {
     va_list ap; va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
-    if (strchr(buf, '?')) s_prompt = 1;
+    if (strchr(buf, '?') || strstr(buf, "Escolha")) s_prompt = 1;
     if (strstr(buf, "Pronto!") || strstr(buf, "Cancelado") || strstr(buf, "FALHOU")) s_results++;
     static char last[512];
     if (strcmp(last, buf) != 0 && !strstr(buf, "%")) {
@@ -93,6 +95,15 @@ uint32_t plat_local_ip(void) { return htonl(INADDR_LOOPBACK); }
 uint32_t plat_discovery_addr(void) {
     const char* s = getenv("PB_SERVER");
     return s ? inet_addr(s) : htonl(INADDR_BROADCAST);
+}
+
+bool plat_fs_init(void) { return true; }
+
+int plat_storage_roots(const char** roots, int max) {
+    const char* r = getenv("PB_SD_ROOT");
+    if (!r || max < 1) return 0;
+    roots[0] = r;
+    return 1;
 }
 
 bool plat_cart_open(char game_code[5], char title[13]) {

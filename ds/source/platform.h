@@ -32,6 +32,11 @@ void plat_status_clear(void);
 bool plat_wifi_connect(void);
 uint32_t plat_local_ip(void); // ordem de rede (como sin_addr.s_addr)
 
+// Cartao de memoria (microSD do R4/flashcart via DLDI, ou SD interno do DSi).
+bool plat_fs_init(void);
+// Pastas raiz onde procurar saves (ex.: "fat:/", "sd:/"). Retorna quantas.
+int plat_storage_roots(const char** roots, int max);
+
 // Cartucho (Slot-1). Pode pedir para o usuario trocar o cartao.
 bool plat_cart_open(char game_code[5], char title[13]);
 
