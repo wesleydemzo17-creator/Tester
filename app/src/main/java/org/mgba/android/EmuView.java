@@ -189,6 +189,20 @@ public class EmuView extends FrameLayout implements Runnable {
     public void onHostResume() { glView.onResume(); }
     public void onHostPause() { glView.onPause(); }
 
+    // ------------------------------------------------------------------ per-game settings, preview
+    private final org.emu.hub.Previews.Recorder recorder = new org.emu.hub.Previews.Recorder();
+
+    /** Re-reads every layout setting (after switching to another game's settings). */
+    public void reloadPrefs() {
+        if (viewW > 0) relayout();
+        overlay.invalidate();
+    }
+
+    /** Frames kept for the game list's moving preview since the last call. */
+    public java.util.List<android.graphics.Bitmap> takePreview() { return recorder.take(); }
+
+    public void resetPreview() { recorder.reset(); }
+
     // ------------------------------------------------------------------ lifecycle
     public void start() {
         if (thread != null) return;
@@ -684,6 +698,13 @@ public class EmuView extends FrameLayout implements Runnable {
 
             Native.runFrame(keys & 0x3FF, rewinding);
             fpsFrames++;
+            if (!rewinding && !fast && recorder.due()) {
+                try {
+                    recorder.offer(renderer.snapshot());
+                } catch (RuntimeException | OutOfMemoryError ignored) {
+                    // The preview is optional.
+                }
+            }
 
             // While fast-forwarding, drawing every frame would only slow things down.
             long now = System.nanoTime();

@@ -32,7 +32,9 @@ import android.widget.ListView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import org.emu.hub.GamePrefs;
 import org.emu.hub.GameRouter;
+import org.emu.hub.Previews;
 import org.emu.hub.RomImporter;
 
 import java.io.File;
@@ -60,6 +62,7 @@ public class MainActivity extends Activity implements EmuView.Listener, SensorEv
 
     private EmuView view;
     private SharedPreferences prefs;
+    private GamePrefs gamePrefs;
     private File baseDir;
     private String romPath;
     private int platform = -1;
@@ -79,7 +82,11 @@ public class MainActivity extends Activity implements EmuView.Listener, SensorEv
         super.onCreate(savedInstanceState);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         useWholeDisplay();
-        prefs = getSharedPreferences("mgba", MODE_PRIVATE);
+        // Every setting goes through one object that also knows the game being played,
+        // so a game can keep its own settings. These keys always stay general.
+        gamePrefs = new GamePrefs(this, getSharedPreferences("mgba", MODE_PRIVATE), "gb",
+                "hires_boot_pending", "last_rom", "last_platform", "layers_off", "channels_off");
+        prefs = gamePrefs;
 
         File ext = getExternalFilesDir(null);
         baseDir = (ext != null) ? ext : getFilesDir();
@@ -94,6 +101,8 @@ public class MainActivity extends Activity implements EmuView.Listener, SensorEv
         // If the app died while the high-resolution renderer was starting, go back to software.
         if (prefs.getBoolean("hires_boot_pending", false)) {
             prefs.edit().putInt("hires", 1).putBoolean("hires_boot_pending", false).apply();
+            String last = prefs.getString("last_rom", null);
+            if (last != null) GamePrefs.clearKey(this, "gb", new File(last), "hires");
             toast("A resolução aumentada travou na última execução e voltou para 1x.");
         }
 
@@ -105,7 +114,12 @@ public class MainActivity extends Activity implements EmuView.Listener, SensorEv
             romPath = prefs.getString("last_rom", null);
             platform = prefs.getInt("last_platform", Native.PLATFORM_GBA);
             view.setPlatform(platform);
-            if (romPath != null) cheats = Cheats.load(baseDir, romPath);
+            if (romPath != null) {
+                cheats = Cheats.load(baseDir, romPath);
+                gamePrefs.setGame(new File(romPath));
+                applyCoreOptions();
+                applyViewSettings();
+            }
         }
         view.start();
         openFromIntent(getIntent());
@@ -139,6 +153,7 @@ public class MainActivity extends Activity implements EmuView.Listener, SensorEv
 
     @Override
     protected void onPause() {
+        if (romPath != null) Previews.save(this, new File(romPath), view.takePreview());
         resumed = false;
         updatePaused();
         view.onHostPause();
@@ -364,6 +379,10 @@ public class MainActivity extends Activity implements EmuView.Listener, SensorEv
         if (!loaded && last != null && new File(last).exists()) {
             item("Continuar: " + new File(last).getName(), () -> loadRom(last));
         }
+        if (loaded && romPath != null) {
+            item(gamePrefs.isOwn() ? "Configurações: só deste jogo  ✔" : "Configurações: gerais (iguais para todos)",
+                    this::showGameSettings);
+        }
         if (loaded) {
             item("Salvar estado", () -> showSlots(true));
             item("Carregar estado", () -> showSlots(false));
@@ -383,6 +402,32 @@ public class MainActivity extends Activity implements EmuView.Listener, SensorEv
         item("Controles na tela: " + onOff(prefs.getBoolean("show_controls", true)), () -> toggle("show_controls", true));
         item("Sair", this::finish);
         showItems("mGBA");
+    }
+
+    // ---- per-game settings
+    private void showGameSettings() {
+        final boolean own = gamePrefs.isOwn();
+        item(own ? "Parar de usar configurações próprias" : "Usar configurações próprias neste jogo", () -> {
+            gamePrefs.setOwn(!own);
+            toast(!own ? "Pronto: as próximas mudanças valem só para este jogo."
+                    : "Este jogo voltou a usar as configurações gerais.");
+            reapply();
+        });
+        item("Restaurar este jogo para as configurações gerais", () -> {
+            gamePrefs.resetGame();
+            toast("Configurações deste jogo apagadas.");
+            reapply();
+        });
+        item("Fechar", () -> { });
+        showItems(own ? "Este jogo tem configurações próprias" : "Este jogo usa as configurações gerais");
+    }
+
+    /** Applies every setting again after switching between the general and the game's own settings. */
+    private void reapply() {
+        applyCoreOptions();
+        applyViewSettings();
+        applyHires();
+        view.reloadPrefs();
     }
 
     // ---- video
@@ -996,7 +1041,12 @@ public class MainActivity extends Activity implements EmuView.Listener, SensorEv
     }
 
     private void loadRom(String path) {
+        if (romPath != null) Previews.save(this, new File(romPath), view.takePreview());
+        view.resetPreview();
+        gamePrefs.setGame(new File(path));
         applyCoreOptions();
+        applyViewSettings();
+        view.reloadPrefs();
         int p = Native.loadRom(path);
         if (p < 0) {
             romPath = null;

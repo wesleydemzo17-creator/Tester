@@ -1,5 +1,6 @@
 package org.desmume.android;
 
+import android.graphics.Bitmap;
 import android.opengl.GLES20;
 import android.opengl.GLSurfaceView;
 import android.util.Log;
@@ -59,6 +60,20 @@ final class ScreenRenderer implements GLSurfaceView.Renderer {
             frameDirty = true;
             hasFrame = true;
             return true;
+        }
+    }
+
+    /** A copy of the top screen of the last frame (for the moving preview), or null. */
+    Bitmap snapshotTop() {
+        synchronized (frameLock) {
+            if (!hasFrame || pixels == null || frameScale < 1) return null;
+            int w = Native.SCREEN_W * frameScale, h = Native.SCREEN_H * frameScale;
+            java.nio.ByteBuffer top = pixels.duplicate();
+            top.position(0);
+            top.limit(w * h * 2);
+            Bitmap b = Bitmap.createBitmap(w, h, Bitmap.Config.RGB_565);
+            b.copyPixelsFromBuffer(top);
+            return b;
         }
     }
 

@@ -8,3 +8,4 @@ local.properties
 app/src/main/assets/cheats.zip
 mgba-upstream/
 app/src/main/assets/cheats_gb.zip
+app/src/main/assets/gamedb.tsv

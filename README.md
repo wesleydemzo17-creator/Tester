@@ -1,32 +1,61 @@
-# DS + GBA para Android (port de teste)
+# Desdual
 
-Um app só com dois núcleos oficiais:
+Emulador de Nintendo DS e de Game Boy / Color / Advance para Android, num app só:
 
 - **Nintendo DS**: [DeSmuME](https://github.com/TASEmulators/desmume) (GPL v2+)
 - **Game Boy, Game Boy Color e Game Boy Advance**: [mGBA](https://github.com/mgba-emu/mgba) (MPL 2.0)
-
-A tela inicial abre qualquer jogo (`.nds`, `.gba`, `.gb`, `.gbc`, soltos ou dentro de `.zip`, `.7z`
-ou `.rar`) e manda para o emulador certo. Abrir um jogo do outro sistema de dentro de um emulador
-também troca de emulador sozinho.
 
 O código dos dois núcleos **não** está neste repositório: `scripts/fetch_desmume.sh` e
 `scripts/fetch_mgba.sh` baixam commits fixados dos repositórios oficiais na hora do build, sem
 modificar nada.
 
+## Tela inicial (estilo XMB)
+
+- Categorias na horizontal (Personalizar, Recentes, Nintendo DS, Game Boy Advance, Game Boy / Color)
+  e os jogos na vertical. Deslize para os lados e para cima/baixo, ou use um controle.
+- Cada jogo aparece com o ícone do cartucho (DS) ou a capa, o nome oficial e a região.
+- Ao selecionar um jogo, a capa vira o fundo e uma **prévia em movimento** roda num quadro: são
+  quadros gravados do seu próprio jogo (aparecem depois de alguns minutos jogando). Antes disso,
+  a prévia usa a tela de título e uma captura baixadas.
+- Toque de novo (ou A) para jogar; segure (ou X/Y) para as opções do jogo: **criar ícone na tela
+  inicial**, **configurações próprias**, escolher capa, baixar imagens, apagar a prévia, renomear,
+  apagar.
+- **Personalizar**: tema de cor (9 cores ou mudando com a hora), fundo (onda animada, cor sólida ou
+  imagem sua), capa como fundo, prévia em movimento, escurecimento, tamanho dos ícones, velocidade
+  da animação, relógio, ordem dos jogos e download de capas.
+
+### Configurações por jogo
+
+Com "configurações próprias" ligadas, tudo que você muda no MENU dentro do jogo (vídeo, shaders,
+layout das telas, controles, JIT, som...) vale só para aquele jogo. Desligado, o jogo usa as
+configurações gerais. Os cheats já eram guardados por jogo.
+
+### Ícones na tela inicial
+
+"Criar ícone na tela inicial" coloca o jogo na tela do Android com a capa ou o ícone dele. Tocar
+no ícone abre o jogo direto, já com as configurações dele, sem passar pela lista.
+
+### Nomes e capas
+
+Os nomes vêm do libretro-database (pelo código do cartucho ou CRC), gerados no build por
+`scripts/fetch_gamedb.sh`. As capas, telas de título e capturas são baixadas do
+[libretro-thumbnails](https://github.com/libretro-thumbnails) no celular, como no RetroArch
+(dá para desligar em Personalizar ou escolher uma capa sua da galeria).
+
 ## Como baixar e instalar
 
 Cada push na branch `main` gera o APK e publica em **Releases → latest** como
-`ds-gba-emulador.apk`. Baixe esse arquivo direto no celular e toque nele para instalar
+`desdual.apk`. Baixe esse arquivo direto no celular e toque nele para instalar
 (precisa de Android 8.0 ou mais novo, 64 bits).
 
-O mesmo APK também fica em Actions → artefato `ds-gba-apk`, mas ali ele vem dentro de um `.zip`
+O mesmo APK também fica em Actions → artefato `desdual-apk`, mas ali ele vem dentro de um `.zip`
 que precisa ser extraído antes.
 
 No PC:
 
 ```bash
 ./scripts/fetch_desmume.sh && ./scripts/fetch_mgba.sh
-./scripts/fetch_cheats.sh && ./scripts/fetch_cheats_gb.sh
+./scripts/fetch_cheats.sh && ./scripts/fetch_cheats_gb.sh && ./scripts/fetch_gamedb.sh
 gradle :app:assembleRelease     # Gradle 8.9+, JDK 17, Android SDK 35, NDK 27
 ```
 
@@ -97,7 +126,7 @@ jogos; faça um savestate antes de ativar.
 ```
 app/src/main/cpp/desmume/         núcleo do DS + ponte JNI (bridge.cpp) e substitutos de glib/libpcap
 app/src/main/cpp/mgba/            núcleo do GBA/GB + ponte JNI (bridge.c)
-app/src/main/java/org/emu/hub/    tela inicial, importação de jogos e escolha do emulador
+app/src/main/java/org/emu/hub/    tela XMB, biblioteca, capas, prévias, configurações por jogo, atalhos
 app/src/main/java/org/mgba/...    app do mGBA (controles, menus, cheats)
 app/src/main/java/...             Native, EmuView (controles, layout, loop), ScreenRenderer + Shaders (OpenGL), MainActivity (menu)
 tools/DumpShaders.java            usado no build para validar os shaders com glslangValidator

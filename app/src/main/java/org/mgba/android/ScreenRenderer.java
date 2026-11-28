@@ -1,5 +1,6 @@
 package org.mgba.android;
 
+import android.graphics.Bitmap;
 import android.opengl.GLES20;
 import android.opengl.GLSurfaceView;
 import android.util.Log;
@@ -57,6 +58,19 @@ final class ScreenRenderer implements GLSurfaceView.Renderer {
             frameDirty = true;
             hasFrame = true;
             return size;
+        }
+    }
+
+    /** A copy of the last picture (for the moving preview), or null. */
+    Bitmap snapshot() {
+        synchronized (frameLock) {
+            if (!hasFrame || frameW < 1 || frameH < 1) return null;
+            ByteBuffer src = pixels.duplicate();
+            src.position(0);
+            src.limit(frameW * frameH * 4);
+            Bitmap b = Bitmap.createBitmap(frameW, frameH, Bitmap.Config.ARGB_8888);
+            b.copyPixelsFromBuffer(src);
+            return b;
         }
     }
 

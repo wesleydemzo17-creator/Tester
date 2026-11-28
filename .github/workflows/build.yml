@@ -31,10 +31,11 @@ jobs:
           ./scripts/fetch_desmume.sh
           ./scripts/fetch_mgba.sh
 
-      - name: Fetch cheat databases (libretro-database, pinned commit)
+      - name: Fetch cheat databases and game names (libretro-database, pinned commit)
         run: |
           ./scripts/fetch_cheats.sh
           ./scripts/fetch_cheats_gb.sh
+          ./scripts/fetch_gamedb.sh
 
       - name: Validate shaders
         run: |
@@ -62,12 +63,12 @@ jobs:
           "$BT"/zipalign -c -P 16 4 "$f" && echo "Alignment OK"
           "$BT"/aapt2 dump badging "$f" | grep -E "^package|^minSdk|^targetSdk|^native-code|launchable"
           mkdir -p out
-          cp "$f" out/ds-gba-emulador.apk
+          cp "$f" out/desdual.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ds-gba-apk
-          path: out/ds-gba-emulador.apk
+          name: desdual-apk
+          path: out/desdual.apk
           if-no-files-found: error
 
       - name: Publish as the "latest" release (direct .apk download)
@@ -75,7 +76,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete latest -y --cleanup-tag || true
-          gh release create latest out/ds-gba-emulador.apk \
+          gh release create latest out/desdual.apk \
             --target "$GITHUB_SHA" --prerelease \
             --title "Último build ($(date -u +%Y-%m-%d) · ${GITHUB_SHA::7})" \
-            --notes "APK de teste gerado automaticamente. Baixe ds-gba-emulador.apk direto no celular e toque para instalar."
+            --notes "Desdual: APK de teste gerado automaticamente. Baixe desdual.apk direto no celular e toque para instalar."

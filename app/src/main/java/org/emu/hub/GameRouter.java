@@ -54,6 +54,19 @@ public final class GameRouter {
         if (!(from instanceof LauncherActivity) && from.getClass() != target) from.finish();
     }
 
+    /**
+     * Opens a game from a home-screen icon: the emulator starts on its own, without the game list
+     * underneath, so leaving the game goes back to the home screen.
+     */
+    public static void openDirect(Activity from, File rom) {
+        remember(from, rom);
+        Class<?> target = isDs(rom) ? org.desmume.android.MainActivity.class : org.mgba.android.MainActivity.class;
+        Intent i = new Intent(from, target);
+        i.putExtra(EXTRA_ROM, rom.getAbsolutePath());
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        from.startActivity(i);
+    }
+
     // ------------------------------------------------------------------ recent games
     private static SharedPreferences prefs(Context c) {
         return c.getSharedPreferences(PREFS, Context.MODE_PRIVATE);

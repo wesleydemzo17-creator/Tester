@@ -27,7 +27,9 @@ import android.widget.ListView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import org.emu.hub.GamePrefs;
 import org.emu.hub.GameRouter;
+import org.emu.hub.Previews;
 import org.emu.hub.RomImporter;
 
 import java.io.File;
@@ -47,6 +49,7 @@ public class MainActivity extends Activity implements EmuView.Listener {
 
     private EmuView view;
     private SharedPreferences prefs;
+    private GamePrefs gamePrefs;
     private File baseDir;
     private String romPath;
     private List<Cheats.Cheat> cheats = new ArrayList<>();
@@ -65,7 +68,11 @@ public class MainActivity extends Activity implements EmuView.Listener {
         super.onCreate(savedInstanceState);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         useWholeDisplay();
-        prefs = getSharedPreferences("desmume", MODE_PRIVATE);
+        // Every setting goes through one object that also knows the game being played,
+        // so a game can keep its own settings. These keys always stay general.
+        gamePrefs = new GamePrefs(this, getSharedPreferences("desmume", MODE_PRIVATE), "ds",
+                "jit_boot_pending", "gpu_boot_pending", "last_rom", "console_mac");
+        prefs = gamePrefs;
 
         File ext = getExternalFilesDir(null);
         baseDir = (ext != null) ? ext : getFilesDir();
@@ -79,11 +86,15 @@ public class MainActivity extends Activity implements EmuView.Listener {
         // If the previous session died while the JIT was starting up, fall back to the interpreter.
         if (prefs.getBoolean("jit_boot_pending", false)) {
             prefs.edit().putBoolean("jit", false).putBoolean("jit_boot_pending", false).apply();
+            String last = prefs.getString("last_rom", null);
+            if (last != null) GamePrefs.clearKey(this, "ds", new File(last), "jit");
             toast("O JIT travou na última execução e foi desligado. Reative em Configurações se quiser.");
         }
         // Same safety net for the GPU renderer.
         if (prefs.getBoolean("gpu_boot_pending", false)) {
             prefs.edit().putBoolean("gpu3d", false).putBoolean("gpu_boot_pending", false).apply();
+            String last = prefs.getString("last_rom", null);
+            if (last != null) GamePrefs.clearKey(this, "ds", new File(last), "gpu3d");
             toast("O 3D pela GPU travou na última execução e voltou para a CPU.");
         }
 
@@ -93,7 +104,14 @@ public class MainActivity extends Activity implements EmuView.Listener {
             return;
         }
         applySettings();
-        if (Native.romLoaded()) romPath = prefs.getString("last_rom", null);
+        if (Native.romLoaded()) {
+            // The activity was recreated while the core kept the game: pick its settings back up.
+            romPath = prefs.getString("last_rom", null);
+            if (romPath != null) {
+                gamePrefs.setGame(new File(romPath));
+                applySettings();
+            }
+        }
         view.start();
         openFromIntent(getIntent());
     }
@@ -129,6 +147,7 @@ public class MainActivity extends Activity implements EmuView.Listener {
         updatePaused();
         view.onHostPause();
         if (coreReady) Native.flushSaves();
+        savePreview();
         // A clean pause means the JIT did not crash the process.
         if (jitGuardArmed) {
             jitGuardArmed = false;
@@ -305,6 +324,10 @@ public class MainActivity extends Activity implements EmuView.Listener {
         if (!loaded && last != null && new File(last).exists()) {
             labels.add("Continuar: " + new File(last).getName());
             actions.add(() -> loadRom(last));
+        }
+        if (loaded && romPath != null) {
+            labels.add(gamePrefs.isOwn() ? "Configurações: só deste jogo  ✔" : "Configurações: gerais (iguais para todos)");
+            actions.add(this::showGameSettings);
         }
         if (loaded) {
             int active = 0;
@@ -689,6 +712,33 @@ public class MainActivity extends Activity implements EmuView.Listener {
     }
 
     // ------------------------------------------------------------------ on-screen controls
+    // ------------------------------------------------------------------ per-game settings
+    private void showGameSettings() {
+        final boolean own = gamePrefs.isOwn();
+        final String[] labels = {
+                own ? "Parar de usar configurações próprias" : "Usar configurações próprias neste jogo",
+                "Restaurar este jogo para as configurações gerais",
+                "Fechar"};
+        dialog(new AlertDialog.Builder(this)
+                .setTitle(own
+                        ? "Este jogo tem configurações próprias: o que você mudar agora vale só para ele."
+                        : "Este jogo usa as configurações gerais. Ligue as próprias para mudar algo só nele.")
+                .setItems(labels, (d, which) -> view.post(() -> {
+                    if (which == 0) {
+                        gamePrefs.setOwn(!own);
+                        toast(!own ? "Pronto: as próximas mudanças valem só para este jogo."
+                                : "Este jogo voltou a usar as configurações gerais.");
+                    } else if (which == 1) {
+                        gamePrefs.resetGame();
+                        toast("Configurações deste jogo apagadas.");
+                    } else {
+                        return;
+                    }
+                    applySettings();
+                    view.reloadPrefs();
+                })));
+    }
+
     private void showControlsMenu() {
         final int style = prefs.getInt("ctrl_style", 0), dpad = prefs.getInt("dpad_style", 0);
         final int opacity = prefs.getInt("ctrl_opacity", 50), scale = prefs.getInt("ctrl_scale", 100);
@@ -926,9 +976,18 @@ public class MainActivity extends Activity implements EmuView.Listener {
         }
     }
 
+    /** Hands the frames recorded during play to the game list. */
+    private void savePreview() {
+        if (romPath != null) Previews.save(this, new File(romPath), view.takePreview());
+    }
+
     private void loadRom(String path) {
         if (!coreReady) return;
+        savePreview();
+        view.resetPreview();
+        gamePrefs.setGame(new File(path));
         applySettings();
+        view.reloadPrefs();
         armJitGuard();
         int r = Native.loadRom(path);
         if (r > 0) {
